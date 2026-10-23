@@ -20,7 +20,7 @@ class LayoutStyle:
     framing: Literal["fit", "fill"] = "fill"
     blur_background: bool = True
     # fit mode: how much of the frame height the foreground video takes (zoomed fit)
-    fit_zoom: float = 1.0
+    fit_zoom: float = 1.2
 
 
 @dataclass
@@ -47,12 +47,17 @@ class CaptionStyle:
 class HeadlineStyle:
     show: bool = True
     position: Literal["top", "bottom"] = "top"
-    style: Literal["card", "band", "plain"] = "card"
-    size_px: int = 72
+    # bold  = big outlined text, key words highlighted, pops in (viral Shorts look)
+    # card / band / plain = text on a rounded card / full-width band / bare text
+    style: Literal["bold", "card", "band", "plain"] = "bold"
+    font: str = "Arial Black"              # any installed font; falls back automatically (e.g. Devanagari)
+    size_px: int = 112                     # at 1080 px wide
     duration_s: float = 4.0                # time on screen
-    text_color: str = "#111111"
-    background_color: str = "#FFFFFF"
-    uppercase: bool = False
+    text_color: str = "#FFFFFF"
+    highlight_color: str = "#FFD60A"       # numbers + emphasis words in the hook (bold style)
+    outline_color: str = "#000000"
+    background_color: str = "#E11D48"      # card / band fill
+    uppercase: bool = True
 
 
 @dataclass

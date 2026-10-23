@@ -152,7 +152,7 @@ def caption_events(lines: list[Line], c: CaptionStyle, W: int, H: int, emphasis:
 
 
 # ------------------------------------------------------------------ headline (hook)
-def _wrap(text: str, max_chars: int) -> list[str]:
+def _wrap(text: str, max_chars: int, limit: int = 3) -> list[str]:
     out, cur = [], ""
     for w in text.split():
         if cur and len(cur) + 1 + len(w) > max_chars:
@@ -162,7 +162,7 @@ def _wrap(text: str, max_chars: int) -> list[str]:
             cur = f"{cur} {w}".strip()
     if cur:
         out.append(cur)
-    return out[:3]
+    return out[:limit]
 
 
 def _rounded_rect(w: int, h: int, r: int) -> str:
@@ -170,10 +170,38 @@ def _rounded_rect(w: int, h: int, r: int) -> str:
             f"l {r} {h} b 0 {h} 0 {h} 0 {h - r} l 0 {r} b 0 0 0 0 {r} 0")
 
 
-def headline_events(text: str, hs: HeadlineStyle, W: int, H: int) -> list[str]:
+def _bold_headline(text: str, hs: HeadlineStyle, W: int, H: int, emphasis: set[str]) -> list[str]:
+    """Big outlined hook, numbers + emphasis words in the highlight colour, pops in then fades."""
+    fs = hs.size_px * W / 1080
+    for _ in range(4):                           # shrink until it fits in 3 lines
+        lines = _wrap(text, max(8, int(W * 0.86 / (fs * 0.68))), limit=99)
+        if len(lines) <= 3:
+            break
+        fs *= 0.86
+    lines = lines[:3]
+    hi, base = ass_tag_color(hs.highlight_color), ass_tag_color(hs.text_color)
+
+    def word(w: str) -> str:
+        t = _esc(w)
+        if any(ch.isdigit() for ch in w) or _norm(w) in emphasis:
+            return f"{{\\c{hi}}}{t}{{\\c{base}}}"
+        return t
+
+    body = "\\N".join(" ".join(word(w) for w in ln.split()) for ln in lines)
+    cy = round(H * 0.17) if hs.position == "top" else round(H * 0.80)
+    bord, shad = max(4, round(fs * 0.11)), max(2, round(fs * 0.05))
+    pop = "\\fscx65\\fscy65\\t(0,170,\\fscx108\\fscy108)\\t(170,280,\\fscx100\\fscy100)"
+    return [_dlg(2, 0, hs.duration_s, "Headline",
+                 f"{{\\an5\\pos({W // 2},{cy})\\fs{round(fs)}\\c{base}\\3c{ass_tag_color(hs.outline_color)}"
+                 f"\\4c&H000000&\\bord{bord}\\shad{shad}\\q2{pop}\\fad(90,260)}}{body}")]
+
+
+def headline_events(text: str, hs: HeadlineStyle, W: int, H: int, emphasis: set[str] = frozenset()) -> list[str]:
     if not hs.show or not text.strip():
         return []
     text = text.upper() if hs.uppercase else text
+    if hs.style == "bold":
+        return _bold_headline(text, hs, W, H, emphasis)
     fs = hs.size_px * W / 1080
     lines = _wrap(text, max(10, int(W * 0.78 / (fs * 0.55))))
     lh = fs * 1.18
@@ -237,14 +265,15 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Caption,{font},{fs},{ass_color(c.text_color)},{ass_color(c.highlight_color)},{outline_col},{back_col},{bold},0,0,0,100,100,0,0,{border_style},{outline},{shadow},5,{round(W*0.06)},{round(W*0.06)},0,1
-Style: Headline,{font},{hs.size_px},{ass_color(hs.text_color)},{ass_color(hs.text_color)},&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,5,{round(W*0.08)},{round(W*0.08)},0,1
+Style: Headline,{hs.font or font},{hs.size_px},{ass_color(hs.text_color)},{ass_color(hs.text_color)},&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,0,0,5,{round(W*0.08)},{round(W*0.08)},0,1
 Style: Shape,{font},20,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    ev = headline_events(hook, hs, W, H)
+    emph = {_norm(e) for e in emphasis}
+    ev = headline_events(hook, hs, W, H, emph)
     if c.show:
-        ev += caption_events(lines, c, W, H, {_norm(e) for e in emphasis})
+        ev += caption_events(lines, c, W, H, emph)
     return head + "\n".join(ev) + "\n"
 

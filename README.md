@@ -61,9 +61,9 @@ with score, grade breakdown, why-this-clip, hook + alt hooks, emphasis words, ca
 ## Motion captions & graphics (brand template)
 | Section | Options |
 |---|---|
-| layout | `9:16 / 1:1 / 16:9`; `fill` = face-tracked crop (YuNet), cuts on sentence boundaries; `fit` = whole frame over blurred copy |
+| layout | `9:16 / 1:1 / 16:9`; `fill` = smart vertical reframing: camera cuts are detected, shots with people get a crop that smoothly follows them (keeps two people together, locks off when still), shots without people (b-roll, cars, graphics) show the whole frame over a blurred copy; `fit` = whole frame over blur everywhere |
 | captions | font, weight, s/m/l, position %, text/highlight/outline colours, `none/shadow/box`, words on screen, uppercase, animation `none / word / karaoke / pop`, LLM emphasis words |
-| headline | hook as `card / band / plain`, top/bottom, size, seconds on screen; slides + fades in |
+| headline | hook as `bold` (default: big outlined text, numbers + key words highlighted, pops in) or `card / band / plain`; font, colours, top/bottom, size, seconds on screen |
 | motion | progress bar, punch-in zoom on alternate sentences |
 | logo / intro & outro / music | overlay PNG; prepend/append video or image; music bed sidechain-ducked under voice |
 
@@ -74,5 +74,8 @@ with score, grade breakdown, why-this-clip, hook + alt hooks, emphasis words, ca
 ## Tests
 `python -m pytest -q tests` (no models or network needed).
 
-Env: `CLIPFORGE_WHISPER` (tiny/base/small/medium/large-v3, default small), `CLIPFORGE_CUDA=1`,
+GPU: transcription uses CUDA automatically when an NVIDIA GPU is present (`CLIPFORGE_CUDA=0` forces CPU);
+rendering uses the NVENC hardware encoder when available (`CLIPFORGE_NVENC=0` forces libx264).
+
+Env: `CLIPFORGE_WHISPER` (tiny/base/small/medium/large-v3, default small), `CLIPFORGE_CUDA`, `CLIPFORGE_NVENC`,
 `CLIPFORGE_MODEL`, `CLIPFORGE_SCORER=heuristic`, `CLIPFORGE_DATA` (API job dir).

@@ -63,10 +63,15 @@ Rules:
 - Use ONLY the sentence indices given. A clip is the contiguous range [start_idx, end_idx].
 - Prefer starting exactly on the sentence that contains the hook line; drop throat-clearing.
 - Respect the duration window you are given. Clips must not overlap much.
-- hook: a punchy on-screen headline (<= 60 chars) in the speaker's language; alt_hooks: 2 \
-different angles. Never use clickbait that the clip does not deliver.
+- hook: the big on-screen text of a viral Short, in the speaker's language. 3-7 words, \
+<= 40 characters. Open a curiosity gap or state the stakes; use the most concrete specific \
+in the clip (a number, price, name, extreme). Good: "$1 CAR vs $1,000,000 CAR", "He Built a \
+Car That FLIES", "Nobody Survives This Test". Bad: summaries ("Discussion about cars"), \
+questions that answer nothing, dashes, quotes, emojis, hashtags. Never promise what the \
+clip does not deliver.
+- alt_hooks: 2 hooks from genuinely different angles (e.g. number-led, emotion-led, challenge-led).
 - emphasis_words: 3-8 single words from the clip that deserve visual emphasis in captions \
-(numbers, names, strong verbs, the key idea).
+(numbers, names, strong verbs, the key idea); include the 1-2 most important words of the hook.
 - why: one or two sentences, concrete, referencing what is said.
 - social_caption: a 1-2 sentence post caption with 2-3 relevant hashtags.
 Return them with the submit_candidates tool."""
@@ -134,6 +139,12 @@ def parse_length(length: str) -> tuple[float, float, bool]:
         raise ClipforgeError("bad_length", f"--length must be one of {', '.join(LENGTHS)} or MIN-MAX seconds "
                                            f"like 50-60, got {length!r}")
     return float(m[1]), float(m[2]), True
+
+
+def _clean_hook(h: str) -> str:
+    """On-screen hook: no wrapping quotes, dashes → plain separators, trimmed."""
+    h = h.strip().strip("\"'“”‘’").replace(" — ", ": ").replace(" – ", ": ").replace("—", " ").replace("–", " ")
+    return re.sub(r"\s+", " ", h)[:80]
 
 
 def _overall(g: dict[str, int]) -> int:
@@ -252,7 +263,7 @@ def find_moments(sents: list[Sentence], language: str = "en", length: str = "aut
         g = {"hook": int(r.get("hook_score", 0)), "flow": int(r.get("flow_score", 0)),
              "value": int(r.get("value_score", 0)), "trend": int(r.get("trend_score", 0))}
         c = Candidate(int(r["start_idx"]), int(r["end_idx"]), 0, 0, r.get("title", ""),
-                      r.get("hook", "")[:80], [h[:80] for h in r.get("alt_hooks", [])][:3],
+                      _clean_hook(r.get("hook", "")), [_clean_hook(h) for h in r.get("alt_hooks", [])][:3],
                       r.get("why", ""), g, [w.lower() for w in r.get("emphasis_words", [])],
                       r.get("social_caption", ""), _overall(g),
                       "claude" if use_claude else "heuristic")

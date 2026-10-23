@@ -1,11 +1,13 @@
 """Steps 3+5 — clip-cutter and render: cut, reframe, motion graphics, burn captions, mix audio."""
 from __future__ import annotations
 
+import functools
+import os
 import shutil
 from pathlib import Path
 
-from .media import MediaInfo, probe, run
-from .reframe import crop_keyframes, face_track, x_expr
+from .media import ClipforgeError, MediaInfo, probe, run
+from .reframe import analyze, crop_commands, enable_expr
 from .template import BrandTemplate
 
 
@@ -28,40 +30,54 @@ def _punch_expr(boundaries: list[float], dur: float, scale: float) -> str:
     return f"if(gt({'+'.join(on)},0),{scale},1)"
 
 
+def _fit_chain(src: str, tpl: BrandTemplate, out: str) -> str:
+    """Whole frame centred over a blurred, darkened copy of itself (or black)."""
+    W, H = tpl.size
+    lay = tpl.layout
+    fg_w = int(round(W * lay.fit_zoom / 2) * 2)
+    if lay.blur_background:
+        # blur a quarter-size copy and scale it back up: same look, a fraction of the cost
+        bg = (f"[{src}]split[fa][fb];[fa]scale={W // 4}:{H // 4}:force_original_aspect_ratio=increase,"
+              f"crop={W // 4}:{H // 4},boxblur=6:3,eq=brightness=-0.10:saturation=1.15,"
+              f"scale={W}:{H}:flags=bilinear[fbg];")
+    else:
+        bg = f"[{src}]null[fb];color=black:s={W}x{H}:r=30[fbg];"
+    return (bg + f"[fb]scale={fg_w}:-2:flags=lanczos[ffg];"
+            f"[fbg][ffg]overlay=x='(W-w)/2':y='(H-h)/2':shortest=1,setsar=1[{out}]")
+
+
 def _video_chain(info: MediaInfo, tpl: BrandTemplate, start: float, end: float,
-                 boundaries: list[float]) -> tuple[str, str]:
+                 boundaries: list[float], cmd_path: Path) -> tuple[str, str]:
     """Return (filter_complex part producing [vbase], framing actually used)."""
     W, H = tpl.size
-    lay, mo = tpl.layout, tpl.motion
+    mo = tpl.motion
     dur = end - start
     z = _punch_expr(boundaries, dur, mo.punch_scale) if mo.punch_in else "1"
     punch = (f",scale=w='trunc({W}*{z}/2)*2':h='trunc({H}*{z}/2)*2':eval=frame,"
              f"crop={W}:{H}:'(iw-{W})/2':'(ih-{H})/2'") if z != "1" else ""
 
     src_ar, dst_ar = info.width / info.height, W / H
-    framing = lay.framing
-    if framing == "fill" and src_ar > dst_ar + 0.01:
-        crop_w = int(round(info.height * dst_ar / 2) * 2)
-        keys = crop_keyframes(face_track(info.path, start, end), boundaries)
-        xe = x_expr(keys, info.width, crop_w)
-        chain = (f"[0:v]crop={crop_w}:{info.height}:'{xe}':0,scale={W}:{H}:flags=lanczos,"
-                 f"setsar=1{punch}[vbase]")
-        return chain, f"fill ({len(keys)} shot positions)"
-    if framing == "fill" and abs(src_ar - dst_ar) <= 0.01:
+    if tpl.layout.framing == "fill" and abs(src_ar - dst_ar) <= 0.01:
         return f"[0:v]scale={W}:{H},setsar=1{punch}[vbase]", "fill"
+    if tpl.layout.framing != "fill" or src_ar < dst_ar:
+        return _fit_chain("0:v", tpl, "vfit") + f";[vfit]null{punch}[vbase]", "fit"
 
-    # fit: whole frame over blurred copy (or black)
-    fg_w = int(round(W * lay.fit_zoom / 2) * 2)
-    if lay.blur_background:
-        bg = (f"[0:v]split[a][b];[a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-              f"boxblur=24:6,eq=brightness=-0.10:saturation=1.15[bg];")
-    else:
-        bg = f"[0:v]null[b];color=black:s={W}x{H}:r=30[bg];"
-    fg_scale = f"[b]scale={fg_w}:-2:flags=lanczos"
-    if z != "1":
-        fg_scale = f"[b]scale=w='trunc({fg_w}*{z}/2)*2':h=-2:eval=frame:flags=lanczos"
-    chain = (bg + fg_scale + "[fg];[bg][fg]overlay=x='(W-w)/2':y='(H-h)/2':shortest=1,setsar=1[vbase]")
-    return chain, "fit"
+    # fill: shot-aware — moving crop on shots with people, whole frame on the rest
+    crop_w = int(round(info.height * dst_ar / 2) * 2)
+    plan = analyze(info.path, start, end, crop_w / info.width)
+    fills = plan.fill_shots
+    n_fill, n_all = len(fills), len(plan.shots)
+    label = f"smart ({n_fill}/{n_all} shots follow people)"
+    if not fills:
+        return _fit_chain("0:v", tpl, "vfit") + f";[vfit]null{punch}[vbase]", label
+    x0, cmds = crop_commands(plan, info.width, crop_w)
+    cmd_path.write_text(cmds, encoding="utf-8")
+    crop = (f"sendcmd=f={cmd_path.name},crop@rf=w={crop_w}:h={info.height}:x={x0}:y=0,"
+            f"scale={W}:{H}:flags=lanczos,setsar=1")
+    if n_fill == n_all:
+        return f"[0:v]{crop}{punch}[vbase]", label
+    return (f"[0:v]split[vs0][vs1];[vs0]{crop}[vfill];" + _fit_chain("vs1", tpl, "vfit") +
+            f";[vfit][vfill]overlay=0:0:enable='{enable_expr(fills)}'{punch}[vbase]"), label
 
 
 def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end: float,
@@ -69,7 +85,8 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
     W, H = tpl.size
     dur = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src)]
-    vchain, framing = _video_chain(info, tpl, start, end, boundaries)
+    vchain, framing = _video_chain(info, tpl, start, end, boundaries,
+                                   ass_path.with_name(f"{out_path.stem}.crop.txt"))
     fonts = f":fontsdir='{_filter_path(tpl.fonts_dir)}'" if tpl.fonts_dir else ""
     g = [vchain, f"[vbase]ass='{ass_path.name}'{fonts}[vcap]"]
     last = "vcap"
@@ -109,8 +126,8 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
 
     tmp = out_path.with_suffix(".body.mp4") if (tpl.intro_outro.intro_path or tpl.intro_outro.outro_path) else out_path
     run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(g),
-         "-map", "[vout]", "-map", f"[{aout}]", "-r", "30", "-c:v", "libx264", "-preset", "veryfast",
-         "-crf", "20", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-t", f"{dur:.3f}",
+         "-map", "[vout]", "-map", f"[{aout}]", "-r", "30", *_video_codec(),
+         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-t", f"{dur:.3f}",
          tmp.name], cwd=ass_path.parent)
     if tmp != out_path:
         _concat_intro_outro(tpl, ass_path.parent / tmp.name, out_path)
@@ -139,8 +156,21 @@ def _concat_intro_outro(tpl: BrandTemplate, body: Path, out: Path) -> None:
         labels += f"[v{i}][a{i}]"
     g.append(f"{labels}concat=n={len(parts)}:v=1:a=1[v][a]")
     run(["ffmpeg", "-y", "-v", "error", *args, "-filter_complex", ";".join(g), "-map", "[v]", "-map", "[a]",
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-movflags", "+faststart",
-         str(out)])
+         *_video_codec(), "-c:a", "aac", "-movflags", "+faststart", str(out)])
+
+
+@functools.cache
+def _video_codec() -> tuple[str, ...]:
+    """NVIDIA hardware encoder when it works (several × faster), else libx264. CLIPFORGE_NVENC=0 disables."""
+    if os.environ.get("CLIPFORGE_NVENC") != "0":
+        try:
+            run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256:d=0.1", "-c:v", "h264_nvenc",
+                 "-f", "null", "-"])
+            return ("-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0",
+                    "-pix_fmt", "yuv420p")
+        except ClipforgeError:
+            pass
+    return ("-c:v", "libx264", "-preset", "veryfast", "-crf", "20")
 
 
 def check_ffmpeg() -> None:

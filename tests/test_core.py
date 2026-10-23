@@ -2,9 +2,8 @@
 import json
 import types
 
-from clipforge import hooks
+from clipforge import hooks, reframe
 from clipforge.captions import build_ass, group_lines
-from clipforge.reframe import crop_keyframes, x_expr
 from clipforge.template import BrandTemplate
 from clipforge.transcribe import Sentence, Word
 
@@ -36,7 +35,7 @@ def test_group_lines_respects_max_words():
 def test_build_ass_all_animations():
     words = [Word("Fifty", 0.1, 0.4), Word("episodes", 0.45, 0.9), Word("first.", 0.95, 1.3)]
     for anim in ("none", "word", "karaoke", "pop"):
-        for style in ("card", "band", "plain"):
+        for style in ("bold", "card", "band", "plain"):
             t = BrandTemplate()
             t.captions.animation, t.headline.style = anim, style
             ass = build_ass(group_lines(words, 0, 2, 3), "Publish fifty episodes first", t, ["fifty"])
@@ -68,8 +67,38 @@ def test_heuristic_fallback(monkeypatch):
     assert clips and all(c.scorer == "heuristic" for c in clips)
 
 
-def test_reframe_expression():
-    keys = crop_keyframes([(0.5, 0.8), (1.0, 0.8), (6.0, 0.2), (6.5, 0.2)], [5.0])
-    assert len(keys) == 2
-    e = x_expr(keys, 1920, 608)
-    assert e.startswith("if(lt(t,5.000),")
+def test_cut_detection():
+    diffs = [1.0] * 30 + [60.0] + [1.0] * 30 + [55.0] + [1.0] * 10
+    assert reframe._cuts(diffs, fps=30) == [1.0, 61 / 30]
+
+
+def test_track_locks_still_speaker_and_follows_moving_one():
+    still = [(t / 6, [(0.5 + 0.005 * (t % 2), 0.1, 1.0)]) for t in range(12)]
+    xs = reframe._track(still, 0, 2, 0.32, 30)
+    assert len(xs) == 60 and len(set(xs)) == 1                     # locked-off shot
+    moving = [(t / 6, [(0.2 + 0.05 * t, 0.1, 1.0)]) for t in range(12)]
+    xs = reframe._track(moving, 0, 2, 0.32, 30)
+    assert xs[-1] > xs[0] + 0.2 and all(b >= a - 1e-9 for a, b in zip(xs, xs[1:]))   # smooth pan
+
+
+def test_two_people_framed_together_when_they_fit():
+    assert abs(reframe._target([(0.42, 0.06, 1.0), (0.58, 0.06, 0.9)], 0.32) - 0.5) < 1e-6
+    assert reframe._target([(0.1, 0.06, 1.0), (0.9, 0.06, 0.5)], 0.32) == 0.1   # too far apart → speaker
+    # half a face at the frame edge loses to the person fully in shot
+    assert reframe._target([(0.9, 0.21, 1.0), (0.56, 0.21, 1.0)], 0.32) == 0.56
+
+
+def test_crop_commands_and_enable():
+    plan = reframe.Plan(30, [reframe.Shot(0, 1, "fill", [0.5] * 30), reframe.Shot(1, 2, "fit"),
+                             reframe.Shot(2, 3, "fill", [0.25] * 30)])
+    x0, cmds = reframe.crop_commands(plan, 1920, 608)
+    assert x0 == 656 and cmds.splitlines() == ["0.000 crop@rf x 656;", "2.000 crop@rf x 176;"]
+    assert reframe.enable_expr(plan.fill_shots) == "between(t,0.000,0.999)+between(t,2.000,2.999)"
+
+
+def test_bold_hook_highlights_numbers_and_emphasis():
+    t = BrandTemplate()
+    ass = build_ass([], "This $500K car drives on water", t, ["water"])
+    head = next(l for l in ass.splitlines() if l.startswith("Dialogue: 2"))
+    hi = "{\\c&H0AD6FF&}"
+    assert f"{hi}$500K" in head and f"{hi}WATER" in head and "\\fscx65" in head
