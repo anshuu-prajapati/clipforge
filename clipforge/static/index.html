@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clipforge</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ff5a36'/><path d='M12 9l12 7-12 7z' fill='white'/></svg>">
+<style>
+  :root {
+    --bg: #f6f6f4; --surface: #ffffff; --surface-2: #f1f1ee; --border: #e4e4df;
+    --text: #18181b; --muted: #6b6b70; --accent: #ff5a36; --accent-ink: #ffffff;
+    --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --radius: 14px;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f11; --surface: #18181b; --surface-2: #222226; --border: #2c2c31;
+      --text: #f4f4f5; --muted: #a1a1aa; --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px 64px; }
+  header { display: flex; align-items: center; gap: 10px; padding: 22px 0; }
+  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; }
+  .logo::after { content: ""; border-left: 11px solid #fff; border-top: 7px solid transparent; border-bottom: 7px solid transparent; margin-left: 3px; }
+  header h1 { font-size: 19px; margin: 0; letter-spacing: -.01em; }
+  header span { color: var(--muted); font-size: 14px; margin-left: 4px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; }
+  .hero h2 { margin: 0 0 4px; font-size: 24px; letter-spacing: -.02em; }
+  .hero p { margin: 0 0 18px; color: var(--muted); }
+
+  .tabs { display: inline-flex; background: var(--surface-2); border-radius: 10px; padding: 4px; gap: 4px; margin-bottom: 14px; }
+  .tabs button { border: 0; background: transparent; color: var(--muted); padding: 7px 14px; border-radius: 7px; font: inherit; font-weight: 500; cursor: pointer; }
+  .tabs button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+  input[type=url], input[type=number], select {
+    width: 100%; padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); color: var(--text); font: inherit; outline: none; }
+  input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+
+  .drop { border: 2px dashed var(--border); border-radius: 12px; padding: 30px 16px; text-align: center; cursor: pointer; color: var(--muted); transition: .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .drop strong { color: var(--text); }
+  .drop .file { margin-top: 6px; color: var(--text); font-weight: 500; word-break: break-all; }
+
+  .opts { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; align-items: end; }
+  .opts label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button { border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 7px 12px; border-radius: 999px; font: inherit; font-size: 14px; cursor: pointer; }
+  .seg button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); font-weight: 600; }
+  .custom { display: none; gap: 6px; align-items: center; }
+  .custom.show { display: flex; }
+  .custom input { width: 70px; }
+  .count { width: 90px; }
+  .opts input[type=number] { padding: 7px 12px; }
+
+  .btn { border: 0; background: var(--accent); color: var(--accent-ink); padding: 11px 20px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; text-decoration: none; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.ghost { background: var(--surface-2); color: var(--text); }
+  .btn.sm { padding: 7px 12px; font-size: 13px; border-radius: 8px; }
+  .go { margin-left: auto; }
+
+  .err { color: var(--bad); margin-top: 10px; font-size: 14px; min-height: 1em; }
+
+  h3 { font-size: 16px; margin: 30px 0 12px; display: flex; align-items: center; gap: 10px; }
+  h3 .spacer { flex: 1; }
+
+  .progress .src { color: var(--muted); font-size: 14px; margin-bottom: 14px; word-break: break-all; }
+  .steps { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .step { padding: 10px; border-radius: 10px; background: var(--surface-2); font-size: 13px; }
+  .step b { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .step small { display: block; color: var(--muted); margin-top: 2px; min-height: 1.4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex: none; }
+  .step.active .dot { background: var(--accent); animation: pulse 1s infinite; }
+  .step.done .dot { background: var(--ok); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .bar { height: 6px; background: var(--surface-2); border-radius: 99px; overflow: hidden; margin-top: 14px; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .clip { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .clip video { width: 100%; aspect-ratio: 9/16; max-height: 520px; background: #000; display: block; object-fit: contain; }
+  .clip .body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+  .meta { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .score { font-weight: 700; padding: 2px 9px; border-radius: 99px; color: #fff; font-size: 13px; }
+  .hook { font-size: 16px; font-weight: 650; line-height: 1.35; margin: 0; }
+  .grades { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+  .g { font-size: 12px; color: var(--muted); }
+  .g div { height: 4px; background: var(--surface-2); border-radius: 99px; margin-top: 3px; overflow: hidden; }
+  .g div i { display: block; height: 100%; background: var(--accent); }
+  .why { font-size: 13px; color: var(--muted); margin: 0; }
+  .alts { display: flex; flex-direction: column; gap: 6px; }
+  .alts .lbl { font-size: 12px; color: var(--muted); }
+  .alt { display: flex; gap: 8px; align-items: center; font-size: 13px; background: var(--surface-2); padding: 6px 6px 6px 10px; border-radius: 8px; }
+  .alt span { flex: 1; }
+  .alt button { border: 0; background: transparent; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; padding: 3px 6px; }
+  .actions { display: flex; gap: 8px; margin-top: auto; padding-top: 4px; }
+  .actions .btn { flex: 1; justify-content: center; }
+
+  .jobs { display: flex; flex-direction: column; gap: 8px; }
+  .job { display: flex; align-items: center; gap: 12px; padding: 12px 14px; cursor: pointer; }
+  .job:hover { border-color: var(--accent); }
+  .job .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job .when { color: var(--muted); font-size: 13px; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+  .pill.done { color: var(--ok); } .pill.failed { color: var(--bad); } .pill.running, .pill.queued { color: var(--warn); }
+  .empty { color: var(--muted); font-size: 14px; }
+  .hidden { display: none !important; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 14px; opacity: 0; transition: .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+
+  @media (max-width: 720px) {
+    .steps { grid-template-columns: repeat(3, 1fr); }
+    .go { margin-left: 0; width: 100%; justify-content: center; }
+    .card { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"></div>
+    <h1>clipforge</h1><span>long video → short clips</span>
+  </header>
+
+  <section class="card hero">
+    <h2>Turn a video into ready-to-post clips</h2>
+    <p>Paste a YouTube link or upload a video. We find the best moments, write hooks and add animated captions.</p>
+
+    <div class="tabs">
+      <button id="tabUrl" class="on" type="button">YouTube link</button>
+      <button id="tabFile" type="button">Upload video</button>
+    </div>
+
+    <div id="paneUrl">
+      <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off">
+    </div>
+    <div id="paneFile" class="hidden">
+      <label class="drop" id="drop">
+        <input id="file" type="file" accept="video/*" hidden>
+        <div><strong>Click to choose a video</strong> or drag it here</div>
+        <div class="file" id="fileName"></div>
+      </label>
+    </div>
+
+    <div class="opts">
+      <div>
+        <label>Clip length</label>
+        <div class="seg" id="len">
+          <button type="button" data-v="auto" class="on">Auto</button>
+          <button type="button" data-v="short">15–30s</button>
+          <button type="button" data-v="medium">30–60s</button>
+          <button type="button" data-v="50-60">50–60s</button>
+          <button type="button" data-v="60-70">60–70s</button>
+          <button type="button" data-v="long">60–90s</button>
+          <button type="button" data-v="custom">Custom</button>
+        </div>
+      </div>
+      <div class="custom" id="custom">
+        <input id="cmin" type="number" min="5" max="180" value="45" aria-label="min seconds"> –
+        <input id="cmax" type="number" min="6" max="180" value="60" aria-label="max seconds"> s
+      </div>
+      <div>
+        <label for="max">Max clips</label>
+        <input id="max" class="count" type="number" min="1" max="12" value="6">
+      </div>
+      <button class="btn go" id="go" type="button">Create clips</button>
+    </div>
+    <div class="err" id="err"></div>
+  </section>
+
+  <section id="progress" class="hidden">
+    <h3>Working on it</h3>
+    <div class="card progress">
+      <div class="src" id="pSrc"></div>
+      <div class="steps" id="steps"></div>
+      <div class="bar"><i id="pBar"></i></div>
+    </div>
+  </section>
+
+  <section id="results" class="hidden">
+    <h3><span id="rTitle">Your clips</span><span class="spacer"></span>
+      <button class="btn ghost sm" id="dlAll" type="button">Download all</button></h3>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section>
+    <h3>Recent projects</h3>
+    <div class="jobs" id="jobs"><div class="empty">No projects yet.</div></div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const STEPS = [
+  ["download", "Download"], ["transcribe", "Transcribe"], ["hook-finder", "Find hooks"],
+  ["clip-cutter", "Cut"], ["captions", "Captions"], ["render", "Render"],
+];
+let mode = "url", length = "auto", file = null, current = null, timer = null;
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (k === "text") n.textContent = v; else n.setAttribute(k, v);
+  }
+  for (const c of kids) if (c != null) n.append(c);
+  return n;
+}
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800); }
+function scoreColor(s) { return s >= 80 ? "var(--ok)" : s >= 65 ? "var(--warn)" : "var(--bad)"; }
+function ago(ts) { const s = (Date.now() / 1000 - ts) | 0; return s < 60 ? "just now" : s < 3600 ? `${s / 60 | 0} min ago` : s < 86400 ? `${s / 3600 | 0} h ago` : `${s / 86400 | 0} d ago`; }
+function fmt(t) { const m = t / 60 | 0, s = Math.round(t % 60); return `${m}:${String(s).padStart(2, "0")}`; }
+
+// ---- form ---------------------------------------------------------------
+function setMode(m) {
+  mode = m;
+  $("tabUrl").classList.toggle("on", m === "url"); $("tabFile").classList.toggle("on", m === "file");
+  $("paneUrl").classList.toggle("hidden", m !== "url"); $("paneFile").classList.toggle("hidden", m !== "file");
+}
+$("tabUrl").onclick = () => setMode("url");
+$("tabFile").onclick = () => setMode("file");
+$("len").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  length = b.dataset.v;
+  for (const x of $("len").children) x.classList.toggle("on", x === b);
+  $("custom").classList.toggle("show", length === "custom");
+};
+function pickFile(f) { file = f; $("fileName").textContent = f ? `${f.name} · ${(f.size / 1e6).toFixed(1)} MB` : ""; }
+$("file").onchange = (e) => pickFile(e.target.files[0]);
+const drop = $("drop");
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) pickFile(e.dataTransfer.files[0]); };
+
+$("go").onclick = () => {
+  $("err").textContent = "";
+  const fd = new FormData();
+  if (mode === "url") {
+    const u = $("url").value.trim();
+    if (!/^https?:\/\//.test(u)) return ($("err").textContent = "Paste a full link starting with https://");
+    fd.append("url", u);
+  } else {
+    if (!file) return ($("err").textContent = "Choose a video file first.");
+    fd.append("file", file);
+  }
+  let len = length;
+  if (len === "custom") {
+    const a = +$("cmin").value, b = +$("cmax").value;
+    if (!(a > 0 && b > a)) return ($("err").textContent = "Custom length: max must be bigger than min.");
+    len = `${a}-${b}`;
+  }
+  fd.append("length", len);
+  fd.append("max_clips", String(Math.max(1, Math.min(12, +$("max").value || 6))));
+
+  $("go").disabled = true;
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/jobs");
+  showProgress({ source: mode === "url" ? fd.get("url") : file.name, steps: {}, state: "uploading" });
+  xhr.upload.onprogress = (e) => { if (mode === "file" && e.lengthComputable) $("pBar").style.width = `${(e.loaded / e.total) * 10}%`; };
+  xhr.onload = () => {
+    $("go").disabled = false;
+    if (xhr.status >= 300) {
+      $("progress").classList.add("hidden");
+      let msg = xhr.responseText; try { msg = JSON.parse(msg).detail; } catch {}
+      return ($("err").textContent = msg || "Something went wrong.");
+    }
+    const job = JSON.parse(xhr.responseText);
+    $("url").value = ""; pickFile(null);
+    openJob(job.id); loadJobs();
+  };
+  xhr.onerror = () => { $("go").disabled = false; $("err").textContent = "Can't reach the server."; };
+  xhr.send(fd);
+};
+
+// ---- progress -----------------------------------------------------------
+function showProgress(job) {
+  $("progress").classList.remove("hidden");
+  $("pSrc").textContent = job.source || "";
+  const curIdx = STEPS.findIndex(([k]) => k === job.current);
+  $("steps").replaceChildren(...STEPS.map(([k, label], i) => {
+    const s = job.steps[k];
+    let cls = "step";
+    if (job.state === "done" || (curIdx > i)) cls += " done";
+    else if (curIdx === i) cls += " active";
+    const detail = s ? [s.status, s.detail].filter(Boolean).join(" · ") : (curIdx > i ? "skipped" : "");
+    return el("div", { class: cls }, el("b", {}, el("span", { class: "dot" }), label), el("small", { text: detail, title: detail }));
+  }));
+  let pct = job.state === "done" ? 100 : curIdx < 0 ? 3 : ((curIdx + 0.5) / STEPS.length) * 100;
+  const tr = job.steps["transcribe"];
+  if (job.current === "transcribe" && tr) { const m = /(\d+)%/.exec(tr.status); if (m) pct = (1 + +m[1] / 100) / STEPS.length * 100; }
+  const r = job.steps["render"];
+  if (job.current === "render" && r) { const m = /(\d+) of (\d+)/.exec(r.detail); if (m) pct = (3 + (m[1] - 1) / m[2] * 3) / STEPS.length * 100; }
+  $("pBar").style.width = `${pct}%`;
+}
+
+async function openJob(id) {
+  current = id; clearTimeout(timer);
+  history.replaceState(null, "", `#${id}`);
+  $("results").classList.add("hidden"); $("err").textContent = "";
+  const poll = async () => {
+    if (current !== id) return;
+    const r = await fetch(`/jobs/${id}`); if (!r.ok) return;
+    const job = await r.json();
+    if (job.state === "failed") {
+      $("progress").classList.add("hidden");
+      $("err").textContent = `Failed: ${job.error?.message || "unknown error"}`;
+      loadJobs(); return;
+    }
+    if (job.state === "done") { $("progress").classList.add("hidden"); loadJobs(); return showClips(id); }
+    showProgress(job);
+    timer = setTimeout(poll, 1500);
+  };
+  poll();
+}
+
+// ---- results ------------------------------------------------------------
+async function showClips(id) {
+  const r = await fetch(`/jobs/${id}/clips`); if (!r.ok) return;
+  const m = await r.json();
+  const base = `/jobs/${id}/files/`;
+  $("rTitle").textContent = `${m.clips.length} clip${m.clips.length === 1 ? "" : "s"}`;
+  $("dlAll").onclick = () => m.clips.forEach((c, i) => setTimeout(() => {
+    el("a", { href: `${base}${c.file}?download=1`, download: c.file }).click();
+  }, i * 400));
+  $("grid").replaceChildren(...m.clips.map((c) => clipCard(id, base, c)));
+  $("results").classList.remove("hidden");
+  $("results").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function clipCard(id, base, c) {
+  const v = el("video", { controls: "", preload: "none", playsinline: "", poster: base + c.thumbnail, src: base + c.file });
+  const hook = el("p", { class: "hook", text: c.hook || c.title });
+  const g = c.grades || {};
+  const grades = el("div", { class: "grades" }, ...["hook", "flow", "value", "trend"].map((k) =>
+    el("div", { class: "g" }, `${k[0].toUpperCase() + k.slice(1)} ${g[k] ?? "–"}`,
+      el("div", {}, el("i", { style: `width:${g[k] || 0}%` })))));
+  const alts = (c.alt_hooks || []).filter(Boolean);
+  const altBox = alts.length ? el("div", { class: "alts" }, el("div", { class: "lbl", text: "Other hooks" }),
+    ...alts.map((h) => el("div", { class: "alt" }, el("span", { text: h }),
+      el("button", { type: "button", text: "Use", onclick: (e) => useHook(e.target, id, c, h, hook, v, base) })))) : null;
+  const copy = c.social_caption ? el("button", { class: "btn ghost sm", type: "button", text: "Copy caption",
+    onclick: () => navigator.clipboard.writeText(c.social_caption).then(() => toast("Caption copied")) }) : null;
+  return el("div", { class: "card clip" }, v,
+    el("div", { class: "body" },
+      el("div", { class: "meta" },
+        el("span", { class: "score", style: `background:${scoreColor(c.score)}`, text: c.score }),
+        el("span", { text: `${Math.round(c.duration)}s · ${fmt(c.start)}–${fmt(c.end)}` })),
+      hook, grades,
+      c.why ? el("p", { class: "why", text: c.why }) : null,
+      altBox,
+      el("div", { class: "actions" },
+        el("a", { class: "btn sm", href: `${base}${c.file}?download=1`, download: c.file, text: "Download" }), copy)));
+}
+
+async function useHook(btn, id, c, h, hookEl, video, base) {
+  btn.disabled = true; btn.textContent = "Rendering…";
+  try {
+    const r = await fetch(`/jobs/${id}/clips/${c.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hook: h }) });
+    if (!r.ok) throw new Error(await r.text());
+    const old = c.hook; c.hook = h; c.alt_hooks = c.alt_hooks.map((x) => (x === h ? old : x));
+    hookEl.textContent = h; btn.previousSibling.textContent = old;
+    const t = Date.now(); video.poster = `${base}${c.thumbnail}?t=${t}`; video.src = `${base}${c.file}?t=${t}`;
+    toast("Hook updated");
+  } catch (e) { toast("Couldn't re-render the clip"); }
+  btn.disabled = false; btn.textContent = "Use";
+}
+
+// ---- recent projects ----------------------------------------------------
+async function loadJobs() {
+  const r = await fetch("/jobs"); if (!r.ok) return;
+  const jobs = await r.json();
+  if (!jobs.length) return;
+  $("jobs").replaceChildren(...jobs.map((j) => el("div", { class: "card job", onclick: () => openJob(j.id) },
+    el("span", { class: "name", text: j.source || j.id, title: j.source || "" }),
+    el("span", { class: "when", text: j.created ? ago(j.created) : "" }),
+    el("span", { class: `pill ${j.state}`, text: j.state === "done" ? `${j.clips ?? ""} clips` : j.state }))));
+  const running = jobs.find((j) => j.state === "running" || j.state === "queued");
+  if (running && !current) openJob(running.id);
+}
+if (location.hash.length > 1) openJob(location.hash.slice(1));
+loadJobs();
+</script>
+</body>
+</html>

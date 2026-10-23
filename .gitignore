@@ -1,0 +1,39 @@
+# secrets — never commit API keys
+.env
+.env.*
+!.env.example
+
+# generated clips, downloads and job data
+out*/
+clipforge_jobs/
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.wav
+*.log
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# stray npm install (ffmpeg is a system binary, not an npm package)
+node_modules/
+package.json
+package-lock.json
+
+# AI agent folders
+.ai/
+.claude/
+.gemini/
+.codex/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
