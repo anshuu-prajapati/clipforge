@@ -7,13 +7,15 @@ is written to clips.json, and `rerender()` rebuilds one clip after edits.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Callable, Optional
 
 from .captions import build_ass, group_lines, lines_from_json, lines_to_json
-from .hooks import candidate_to_dict, find_moments
+from .hooks import Candidate, candidate_to_dict, find_moments
 from .media import ClipforgeError, extract_audio, fetch, preflight, probe, rms_envelope
 from .render import render_clip
 from .template import BrandTemplate
@@ -43,7 +45,9 @@ def run_pipeline(source: str, out_dir: str | Path, tpl: Optional[BrandTemplate] 
 
     # 1. transcribe ---------------------------------------------------------
     tr_path = out / "transcript.json"
-    wav = extract_audio(src, out / "audio16k.wav")
+    wav = out / "audio16k.wav"
+    if not wav.exists():
+        extract_audio(src, wav)
     if tr_path.exists():
         tr = Transcript.load(tr_path)
         progress("transcribe", "cached", f"{len(tr.words)} words")
@@ -60,12 +64,24 @@ def run_pipeline(source: str, out_dir: str | Path, tpl: Optional[BrandTemplate] 
     annotate_energy(sents, env, hop)
 
     # 2. hook-finder --------------------------------------------------------
-    progress("hook-finder", "scoring moments", f"{len(sents)} sentences")
-    clips, n_raw = find_moments(sents, tr.language, length, max_clips,
-                                progress=lambda m: progress("hook-finder", m, ""))
-    progress("hook-finder", "done", f"{n_raw} candidates → {len(clips)} clips")
+    moments = out / "moments.json"
+    key = {"length": length, "max_clips": max_clips}
+    cached = json.loads(moments.read_text(encoding="utf-8")) if moments.exists() else {}
+    if cached.get("key") == key:
+        clips = [Candidate(**{f.name: d[f.name] for f in fields(Candidate)}) for d in cached["clips"]]
+        n_raw = cached["n_raw"]
+        progress("hook-finder", "cached", f"{len(clips)} clips")
+    else:
+        progress("hook-finder", "scoring moments", f"{len(sents)} sentences")
+        clips, n_raw = find_moments(sents, tr.language, length, max_clips,
+                                    progress=lambda m: progress("hook-finder", m, ""))
+        progress("hook-finder", "done", f"{n_raw} candidates → {len(clips)} clips")
+        if all(c.scorer == "claude" for c in clips):   # heuristic is cheap; retry Claude next time
+            moments.write_text(json.dumps({"key": key, "n_raw": n_raw, "clips": [asdict(c) for c in clips]},
+                                          ensure_ascii=False), encoding="utf-8")
 
     # 3-5. cut, caption, render ---------------------------------------------
+    prev = _previous_renders(out, src)
     manifest = {"source": str(src), "duration": info.duration, "language": tr.language,
                 "template": tpl.to_dict(), "candidates_scored": n_raw, "clips": []}
     for k, c in enumerate(clips, 1):
@@ -77,10 +93,16 @@ def run_pipeline(source: str, out_dir: str | Path, tpl: Optional[BrandTemplate] 
             "id": cid, "file": f"{cid}.mp4", "lines": lines_to_json(lines),
             "boundaries": [round(b, 3) for b in boundaries],
         }
-        progress("clip-cutter", "cutting vertical clips", f"{k} of {len(clips)}")
-        progress("captions", "captions timed to every word", f"{len(lines)} lines")
-        progress("render", f"rendering {tpl.size[0]}x{tpl.size[1]}", f"{k} of {len(clips)}")
-        entry |= _render(entry, src, info, tpl, out)
+        old = prev.get(cid)
+        if old and (old["start"], old["end"], old["hook"]) == (entry["start"], entry["end"], entry["hook"]) \
+                and old.get("rendered_with", {}).get("tpl") == _tpl_hash(tpl):
+            progress("render", "already rendered", f"{k} of {len(clips)}")
+            entry |= {k2: old[k2] for k2 in ("framing", "thumbnail", "rendered_with") if k2 in old}
+        else:
+            progress("clip-cutter", "cutting vertical clips", f"{k} of {len(clips)}")
+            progress("captions", "captions timed to every word", f"{len(lines)} lines")
+            progress("render", f"rendering {tpl.size[0]}x{tpl.size[1]}", f"{k} of {len(clips)}")
+            entry |= _render(entry, src, info, tpl, out)
         manifest["clips"].append(entry)
         _write(out, manifest)
 
@@ -94,7 +116,8 @@ def _reset_if_new_source(source: str, out: Path) -> None:
     marker = out / "source.txt"
     if marker.exists() and marker.read_text(encoding="utf-8").strip() == source:
         return
-    for p in [*out.glob("source.*"), out / "audio16k.wav", out / "transcript.json"]:
+    for p in [*out.glob("source.*"), out / "audio16k.wav", out / "transcript.json",
+              out / "moments.json", out / "clips.json"]:
         if p != marker:
             try:
                 p.unlink(missing_ok=True)
@@ -104,12 +127,32 @@ def _reset_if_new_source(source: str, out: Path) -> None:
     marker.write_text(source, encoding="utf-8")
 
 
+def _tpl_hash(tpl: BrandTemplate) -> str:
+    return hashlib.sha1(json.dumps(tpl.to_dict(), sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _previous_renders(out: Path, src: Path) -> dict[str, dict]:
+    """Clips from an earlier (interrupted) run of the same source whose files still exist."""
+    p = out / "clips.json"
+    if not p.exists():
+        return {}
+    m = json.loads(p.read_text(encoding="utf-8"))
+    if Path(m.get("source", "")) != src:
+        return {}
+    return {c["id"]: c for c in m["clips"]
+            if (out / c["file"]).exists() and (out / c.get("thumbnail", "-")).exists()}
+
+
 def _render(entry: dict, src: Path, info, tpl: BrandTemplate, out: Path) -> dict:
     ass = out / f"{entry['id']}.ass"
     ass.write_text(build_ass(lines_from_json(entry["lines"]), entry["hook"], tpl,
                              entry.get("emphasis_words", [])), encoding="utf-8")
     meta = render_clip(str(src), info, tpl, entry["start"], entry["end"], ass,
                        out / entry["file"], entry.get("boundaries", []))
+    # what the dashboard needs to know whether an export must re-render
+    meta["rendered_with"] = {"aspect": tpl.layout.aspect, "resolution": tpl.resolution,
+                             "captions": tpl.captions.show, "minimal": tpl.captions.animation == "none",
+                             "max_words": tpl.captions.max_words, "tpl": _tpl_hash(tpl)}
     return meta
 
 
@@ -132,16 +175,18 @@ def rerender(out_dir: str | Path, clip_id: str, *, hook: Optional[str] = None,
         entry["hook"] = hook
     if lines is not None:
         entry["lines"] = lines
+    regroup = tpl.captions.max_words != entry.get("rendered_with", {}).get("max_words", tpl.captions.max_words)
     if trim is not None:                              # new absolute start/end in the source
-        tr = Transcript.load(out / "transcript.json")
         old_start = entry["start"]
         entry["start"], entry["end"] = trim
         entry["duration"] = round(trim[1] - trim[0], 2)
-        if lines is None:
-            entry["lines"] = lines_to_json(group_lines(tr.words_between(*trim), trim[0], trim[1],
-                                                       tpl.captions.max_words))
         entry["boundaries"] = [round(b + old_start - trim[0], 3) for b in entry.get("boundaries", [])
                                if 0 < b + old_start - trim[0] < trim[1] - trim[0]]
+        regroup = True
+    if regroup and lines is None:                     # new range or words-per-line → rebuild caption lines
+        tr = Transcript.load(out / "transcript.json")
+        s, e = entry["start"], entry["end"]
+        entry["lines"] = lines_to_json(group_lines(tr.words_between(s, e), s, e, tpl.captions.max_words))
     manifest["template"] = tpl.to_dict()
     src = Path(manifest["source"])
     entry |= _render(entry, src, probe(src), tpl, out)
