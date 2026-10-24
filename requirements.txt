@@ -7,4 +7,8 @@ uvicorn
 python-multipart
 # optional: yt-dlp (for YouTube/TikTok/IG/X/FB links)
 yt-dlp
+# publishing to YouTube Shorts / Instagram Reels
+google-api-python-client
+google-auth-oauthlib
+httpx
 # ffmpeg is a system binary, not a pip/npm package — see README "Install"

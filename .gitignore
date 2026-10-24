@@ -1,7 +1,10 @@
-# secrets — never commit API keys
+# secrets — never commit API keys or OAuth credentials
 .env
 .env.*
 !.env.example
+client_secret*.json
+*_token.json
+credentials/
 
 # generated clips, downloads and job data
 out*/

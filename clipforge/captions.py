@@ -13,6 +13,7 @@ The hook headline is a card / band / plain title that slides in and fades out.
 """
 from __future__ import annotations
 
+import copy
 import re
 from dataclasses import asdict, dataclass
 
@@ -232,6 +233,15 @@ def headline_events(text: str, hs: HeadlineStyle, W: int, H: int, emphasis: set[
                    f"\\fs{round(fs)}\\c{ass_tag_color(hs.text_color)}"
                    f"{border}\\shad0}}{joined}"))
     return ev
+
+
+def build_cover_ass(hook: str, tpl: BrandTemplate, emphasis: list[str]) -> str:
+    """Hook only, fully shown and static — for the thumbnail (no captions, no animation)."""
+    t = copy.deepcopy(tpl)
+    t.captions.show, t.headline.duration_s = False, 3600
+    ass = build_ass([], hook, t, emphasis)
+    ass = re.sub(r"\\move\((-?\d+),(-?\d+),(-?\d+),(-?\d+)(?:,\d+,\d+)?\)", r"\\pos(\3,\4)", ass)
+    return re.sub(r"\\fscx65\\fscy65(\\t\([^)]*\))*|\\fad\(\d+,\d+\)", "", ass)
 
 
 # ------------------------------------------------------------------ document

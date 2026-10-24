@@ -126,6 +126,20 @@
   .alts { display: flex; flex-wrap: wrap; gap: 6px; }
   .alts button { border: 2px solid var(--color-divider); background: transparent; font: inherit; font-size: 13px; font-weight: 600; padding: 4px 8px; cursor: pointer; text-align: left; }
   .alts button:hover { border-color: var(--color-text); }
+  textarea.input { resize: vertical; min-height: 84px; line-height: 1.45; font-size: 14px; }
+  .dialog.wide { width: min(860px, 100%); max-height: calc(100vh - 32px); overflow: auto; }
+  .acct { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--color-divider); }
+  .acct .nm { font-weight: 700; }
+  .acct small { display: block; font-size: 12px; color: var(--color-neutral-700); font-weight: 500; }
+  .acct small.bad { color: var(--color-accent-700); }
+  .cnt { font-family: var(--mono); font-size: 11px; color: var(--color-neutral-600); text-align: right; }
+  .cnt.over { color: var(--color-accent-700); font-weight: 700; }
+  .pubrow { display: grid; grid-template-columns: 1fr 110px 120px; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--color-divider); font-size: 14px; }
+  .pubrow .bar { height: 6px; }
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge { font-size: 11px; font-weight: 800; letter-spacing: .04em; padding: 2px 6px; text-decoration: none; border: 2px solid currentColor; }
+  .badge.done { color: var(--color-text); } .badge.sched { color: var(--color-accent-700); } .badge.fail { color: var(--color-accent-700); background: var(--color-accent-100); }
+  .badge.run { color: var(--color-accent); }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--color-text); color: var(--color-bg); padding: 10px 16px; font-size: 14px; font-weight: 600; opacity: 0; transition: .2s; pointer-events: none; z-index: 60; }
   .toast.show { opacity: 1; }
   @media (max-width: 720px) {
@@ -260,6 +274,10 @@
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <div class="seg ratioSeg"></div>
       <button class="btn btn-secondary" id="toggleAll">Select all</button>
+      <button class="btn btn-secondary" id="publishSel" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+        <span id="publishSelLbl">Publish</span>
+      </button>
       <button class="btn btn-primary" id="exportSel" disabled>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
         <span id="exportSelLbl">Export</span>
@@ -275,6 +293,8 @@
     <button class="btn btn-ghost" id="backToClips" style="padding-left:0">← All clips</button>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <div class="seg ratioSeg"></div>
+      <button class="btn btn-secondary" id="publishCurrent">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>Publish</button>
       <button class="btn btn-primary" id="exportCurrent">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>Export clip</button>
     </div>
@@ -360,6 +380,72 @@
     </div>
   </div>
 </div>
+<!-- ============================================================ PUBLISH -->
+<div class="dialog-backdrop hidden" id="pub">
+  <div class="dialog wide" role="dialog" aria-modal="true">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div>
+        <div class="dialog-title" id="pubTitle">Publish clip</div>
+        <span style="font-size:13px;color:var(--color-neutral-700)" id="pubSub"></span>
+      </div>
+      <button class="btn btn-icon" id="pubClose" style="width:32px;height:32px" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+
+    <div id="pubForm" style="display:flex;flex-direction:column;gap:22px">
+      <div>
+        <h6 style="margin:0 0 4px">Post to</h6>
+        <div style="border-top:2px solid var(--color-text)" id="pubAccts"></div>
+      </div>
+
+      <div id="pubSingle" style="display:grid;grid-template-columns:minmax(0,170px) 1fr;gap:20px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <div style="aspect-ratio:9/16;background:#000 center/cover no-repeat;border:2px solid var(--color-text)" id="pubCover"></div>
+          <span style="font-size:12px;color:var(--color-neutral-700)">Cover · hook on the sharpest frame</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px;min-width:0" id="pubFields">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+            <span style="font-size:13px;color:var(--color-neutral-700)" id="pubGen">Writing titles and captions…</span>
+            <button class="btn btn-ghost" id="pubRegen" style="font-size:13px">↻ Rewrite with AI</button>
+          </div>
+          <div class="field"><label for="ytTitle">YouTube title</label><input class="input" id="ytTitle" maxlength="100"><span class="cnt" data-for="ytTitle" data-max="100"></span></div>
+          <div class="field"><label for="ytDesc">YouTube description</label><textarea class="input" id="ytDesc" rows="4"></textarea></div>
+          <div class="field"><label for="ytTags">YouTube tags (comma separated)</label><input class="input" id="ytTags"></div>
+          <div class="field"><label for="igCap">Instagram caption + hashtags</label><textarea class="input" id="igCap" rows="6"></textarea><span class="cnt" data-for="igCap" data-max="2200"></span></div>
+        </div>
+      </div>
+      <div id="pubMulti" class="hidden" style="font-size:14px;border-left:4px solid var(--color-accent);padding:4px 0 4px 12px">
+        Each clip gets its own AI-written title, description, tags, caption and hashtags, and its own cover.
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:20px 28px;align-items:flex-end">
+        <div class="field"><label>YouTube visibility</label>
+          <div class="seg" id="pubPrivacy">
+            <label class="seg-opt"><input type="radio" name="priv" value="public" checked>Public</label>
+            <label class="seg-opt"><input type="radio" name="priv" value="unlisted">Unlisted</label>
+            <label class="seg-opt"><input type="radio" name="priv" value="private">Private</label>
+          </div></div>
+        <div class="field"><label>When</label>
+          <div class="seg" id="pubWhen">
+            <label class="seg-opt"><input type="radio" name="when" value="now" checked>Now</label>
+            <label class="seg-opt"><input type="radio" name="when" value="later">Schedule</label>
+          </div></div>
+        <div class="field hidden" id="pubAtWrap"><label for="pubAt">Start at</label><input class="input" type="datetime-local" id="pubAt" style="padding:7px 10px"></div>
+        <div class="field hidden" id="pubEveryWrap"><label for="pubEvery">Then one every</label>
+          <select class="input" id="pubEvery" style="padding:7px 10px">
+            <option value="0">all at once</option><option value="3">3 hours</option><option value="6">6 hours</option>
+            <option value="12">12 hours</option><option value="24" selected>day</option><option value="48">2 days</option></select></div>
+      </div>
+      <div class="err" id="pubErr"></div>
+      <button class="btn btn-primary btn-block" id="pubGo" style="padding:14px 16px;font-size:15px">Publish →</button>
+    </div>
+
+    <div id="pubProgress" class="hidden" style="display:flex;flex-direction:column;gap:14px">
+      <div style="border-top:2px solid var(--color-text)" id="pubRows"></div>
+      <span style="font-size:13px;color:var(--color-neutral-700)">You can close this — uploads continue on the server, and scheduled posts go out even after a restart.</span>
+      <button class="btn btn-secondary btn-block" id="pubDone">Close</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -403,7 +489,7 @@ function screen(name) {
 }
 async function route() {
   clearTimeout(S.poll);
-  const [, id, clip] = location.hash.match(/^#\/job\/([\w]+)(?:\/(clip_\d+))?/) || [];
+  const [, id, clip, action] = location.hash.match(/^#\/job\/([\w]+)(?:\/(clip_\d+))?(?:\/(publish))?/) || [];
   if (!id) { store.set("cf.lastJob", null); screen("landing"); loadProjects(); return; }
   if (S.jobId !== id) Object.assign(S, { jobId: id, M: null, sel: new Set(), edits: {}, words: null });
   store.set("cf.lastJob", id);
@@ -412,7 +498,10 @@ async function route() {
   S.job = job;
   if (job.state !== "done") { screen("processing"); renderProcessing(); return pollJob(); }
   if (!S.M) await loadManifest();
-  if (clip && S.M.clips.some((c) => c.id === clip)) openEditor(clip); else { screen("results"); renderResults(); }
+  await loadPub();
+  if (pubBusy()) setTimeout(pubPoll, 2000);
+  if (clip && action === "publish") { screen("results"); renderResults(); openPublish([clip]); }
+  else if (clip && S.M.clips.some((c) => c.id === clip)) openEditor(clip); else { screen("results"); renderResults(); }
 }
 window.addEventListener("hashchange", route);
 document.addEventListener("click", (e) => {
@@ -566,7 +655,7 @@ async function pollJob() {
   try { S.job = await api(`/jobs/${id}`); } catch { S.poll = setTimeout(pollJob, 3000); return; }   // server restarting → keep trying
   if (S.jobId !== id || !location.hash.includes(id)) return;
   renderProcessing();
-  if (S.job.state === "done") { await loadManifest(); screen("results"); renderResults(); return; }
+  if (S.job.state === "done") { await loadManifest(); await loadPub(); screen("results"); renderResults(); return; }
   if (S.job.state !== "failed") S.poll = setTimeout(pollJob, 1500);
 }
 
@@ -620,10 +709,13 @@ function renderResults() {
         <div style="font-weight:700;font-size:15px;line-height:1.3">${esc(hook)}</div>
         <div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--color-neutral-700)">
           <span class="tag tag-neutral" style="padding:1px 6px">CC</span>Auto captions · ${Math.round(e - s)}s${ed ? ' · <b style="color:var(--color-accent)">edited</b>' : ""}</div>
+        <div class="badges">${pubBadges(c.id)}</div>
       </div>
       <div style="display:flex;gap:8px;border-top:2px solid var(--color-divider);padding-top:8px">
         <button class="btn btn-secondary" data-edit style="flex:1;justify-content:flex-start">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" x2="8.12" y1="4" y2="15.88"/><line x1="14.47" x2="20" y1="14.48" y2="20"/><line x1="8.12" x2="12" y1="8.12" y2="12"/></svg>Edit</button>
+        <button class="btn btn-secondary btn-icon" data-publish title="Publish to YouTube / Instagram" aria-label="Publish">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
         <button class="btn btn-secondary btn-icon" data-download title="Download" aria-label="Download">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
       </div></div>`;
@@ -631,6 +723,8 @@ function renderResults() {
   const n = S.sel.size;
   $("exportSelLbl").textContent = n ? `Export (${n})` : "Export";
   $("exportSel").disabled = !n;
+  $("publishSelLbl").textContent = n ? `Publish (${n})` : "Publish";
+  $("publishSel").disabled = !n;
   $("toggleAll").textContent = n === M.clips.length ? "Clear selection" : "Select all";
 }
 const fileUrl = (name, c) => `/jobs/${S.jobId}/files/${encodeURIComponent(name)}${c && c.v ? "?v=" + c.v : ""}`;
@@ -639,6 +733,7 @@ $("cards").addEventListener("click", (e) => {
   const id = card.dataset.clip;
   if (e.target.closest("[data-toggle]")) { S.sel.has(id) ? S.sel.delete(id) : S.sel.add(id); renderResults(); return; }
   if (e.target.closest("[data-download]")) return openExport([id]);
+  if (e.target.closest("[data-publish]")) return openPublish([id]);
   if (e.target.closest("[data-edit]")) go(`#/job/${S.jobId}/${id}`);
 });
 $("cards").addEventListener("mouseover", (e) => { const v = e.target.closest(".card-media")?.querySelector("video"); if (v && v.paused) v.play().catch(() => {}); });
@@ -769,6 +864,8 @@ $("trEnd").addEventListener("pointerdown", grab("e"));
 $("track").addEventListener("pointerdown", (e) => { $("pvVideo").currentTime = clamp(posToTime(e.clientX), E.trim[0], E.trim[1]); renderHead(); });
 $("backToClips").onclick = () => go(`#/job/${S.jobId}`);
 $("exportCurrent").onclick = () => openExport([S.editId]);
+$("publishCurrent").onclick = () => openPublish([S.editId]);
+$("publishSel").onclick = () => openPublish([...S.sel]);
 
 // ---------------------------------------------------------------- export
 function wanted() {
@@ -837,6 +934,147 @@ $("expRun").onclick = async () => {
     phase("idle"); toast("Export failed: " + err.message);
   }
 };
+
+// ---------------------------------------------------------------- publish
+S.pub = { status: {}, social: {}, scheduled: [] };
+let P = null;            // open publish dialog: { ids }
+const PLATS = [["youtube", "YouTube Shorts", "YT"], ["instagram", "Instagram Reels", "IG"]];
+const shortDate = (ts) => new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+async function loadPub() { if (S.jobId) { try { S.pub = await api(`/jobs/${S.jobId}/publish`); } catch {} } }
+function pubBadges(id) {
+  const st = (S.pub.status || {})[id] || {};
+  return PLATS.filter(([p]) => st[p]).map(([p, , n]) => {
+    const s = st[p];
+    if (s.state === "done") return `<a class="badge done" href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.note || "Posted")}">${n} ✓ posted</a>`;
+    if (s.state === "scheduled" || s.state === "waiting") return `<span class="badge sched" title="Goes live ${esc(new Date(s.at * 1000).toLocaleString())}">${n} · ${shortDate(s.at)}</span>`;
+    if (s.state === "failed") return `<span class="badge fail" title="${esc(s.error)}">${n} failed</span>`;
+    return `<span class="badge run">${n} ${Math.round((s.pct || 0) * 100)}%</span>`;
+  }).join("");
+}
+const pubBusy = () => Object.values(S.pub.status || {}).some((pl) => Object.values(pl).some((s) => ["queued", "running"].includes(s.state)));
+async function pubPoll() {
+  clearTimeout(pubPoll.t);
+  await loadPub();
+  if (!$("results").classList.contains("hidden")) renderResults();
+  if (P && !$("pubProgress").classList.contains("hidden")) renderPubRows();
+  if (pubBusy()) pubPoll.t = setTimeout(pubPoll, 2000);
+}
+
+function localInput(d) { const z = new Date(d - d.getTimezoneOffset() * 60000); return z.toISOString().slice(0, 16); }
+async function openPublish(ids) {
+  if (!ids.length) return;
+  P = { ids };
+  const single = ids.length === 1, c = single && S.M.clips.find((x) => x.id === ids[0]);
+  $("pubTitle").textContent = single ? "Publish clip" : `Publish ${ids.length} clips`;
+  $("pubSub").textContent = single ? c.hook : "Schedule them to go out one after another";
+  $("pubSingle").classList.toggle("hidden", !single);
+  $("pubMulti").classList.toggle("hidden", single);
+  $("pubForm").classList.remove("hidden"); $("pubProgress").classList.add("hidden");
+  $("pubErr").textContent = single && S.edits[ids[0]] ? "This clip has unsaved edits — export it first to publish them." : "";
+  const next = new Date(); next.setMinutes(0, 0, 0); next.setHours(next.getHours() + 2);
+  $("pubAt").value = localInput(next);
+  document.querySelector('#pubWhen input[value="now"]').checked = true; whenChanged();
+  $("pub").classList.remove("hidden");
+  renderAccts(null);
+  api("/publish/accounts").then(renderAccts).catch((e) => renderAccts({ error: e.message }));
+  if (single) loadSocial(ids[0], false);
+}
+function renderAccts(a) {
+  P.accts = a;
+  $("pubAccts").innerHTML = PLATS.map(([p, label]) => {
+    const st = a && a[p];
+    let note, action = "", ok = !!(st && st.connected);
+    if (!a) note = "Checking connection…";
+    else if (a.error) note = `<span class="bad">${esc(a.error)}</span>`;
+    else if (ok) note = `Connected as <b>${esc(st.name)}</b>`;
+    else if (st.error) note = `<span class="bad">${esc(st.error)}</span>`;
+    else if (p === "youtube" && st.configured) { note = "Not connected yet"; action = `<button class="btn btn-secondary" data-connect="youtube">Connect YouTube</button>`; }
+    else if (p === "youtube") note = "Put your Google OAuth file at credentials\\client_secret.json";
+    else note = "Add INSTAGRAM_ACCESS_TOKEN=… to .env, then restart the server";
+    const on = ok && (P.platforms ? P.platforms.has(p) : true);
+    return `<div class="acct"><label class="check"><input type="checkbox" data-plat="${p}" ${ok ? "" : "disabled"} ${on ? "checked" : ""}></label>
+      <div><span class="nm">${label}</span><small${/class="bad"/.test(note) ? ' class="bad"' : ""}>${note}</small></div>${action}</div>`;
+  }).join("");
+  P.platforms = new Set($$("#pubAccts input[data-plat]:checked").map((x) => x.dataset.plat));
+}
+$("pubAccts").addEventListener("change", (e) => { if (e.target.dataset.plat) P.platforms = new Set($$("#pubAccts input[data-plat]:checked").map((x) => x.dataset.plat)); });
+$("pubAccts").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-connect]"); if (!b) return;
+  b.disabled = true; b.textContent = "Approve in the browser window…";
+  try { await api("/publish/youtube/connect", { method: "POST" }); toast("YouTube connected"); }
+  catch (err) { toast("YouTube: " + err.message); }
+  renderAccts(await api("/publish/accounts").catch((er) => ({ error: er.message })));
+});
+async function loadSocial(id, regenerate) {
+  $("pubGen").textContent = regenerate ? "Rewriting with AI…" : "Writing titles and captions…";
+  $$("#pubFields .input").forEach((x) => (x.disabled = true));
+  $("pubGo").disabled = true;
+  try {
+    const s = await api(`/jobs/${S.jobId}/clips/${id}/social${regenerate ? "?regenerate=true" : ""}`, { method: "POST" });
+    if (!P || P.ids[0] !== id) return;
+    $("ytTitle").value = s.youtube.title; $("ytDesc").value = s.youtube.description;
+    $("ytTags").value = (s.youtube.tags || []).join(", "); $("igCap").value = s.instagram.caption;
+    $("pubCover").style.backgroundImage = `url('/jobs/${S.jobId}/files/${encodeURIComponent(s.cover)}?v=${Date.now()}')`;
+    $("pubGen").textContent = s.generated_by === "claude" ? "Written by Claude from what's said in the clip — edit freely." : "Basic copy (Claude unavailable) — edit before posting.";
+  } catch (err) { $("pubGen").textContent = "Couldn't prepare the post: " + err.message; }
+  $$("#pubFields .input").forEach((x) => (x.disabled = false));
+  $("pubGo").disabled = false; counters();
+}
+$("pubRegen").onclick = () => P && loadSocial(P.ids[0], true);
+function counters() { $$(".cnt").forEach((el) => { const n = $(el.dataset.for).value.length; el.textContent = `${n} / ${el.dataset.max}`; el.classList.toggle("over", n > +el.dataset.max); }); }
+["ytTitle", "igCap"].forEach((id) => $(id).addEventListener("input", counters));
+function whenChanged() {
+  const later = document.querySelector('#pubWhen input:checked').value === "later";
+  $("pubAtWrap").classList.toggle("hidden", !later);
+  $("pubEveryWrap").classList.toggle("hidden", !later || !P || P.ids.length < 2);
+  $("pubGo").textContent = later ? "Schedule →" : "Publish now →";
+}
+$("pubWhen").addEventListener("change", whenChanged);
+$("pubGo").onclick = async () => {
+  $("pubErr").textContent = "";
+  const platforms = [...(P.platforms || [])];
+  if (!platforms.length) return ($("pubErr").textContent = "Pick at least one connected account.");
+  const later = document.querySelector('#pubWhen input:checked').value === "later";
+  const startAt = later ? new Date($("pubAt").value).getTime() / 1000 : null;
+  if (later && !(startAt > Date.now() / 1000 + 120)) return ($("pubErr").textContent = "Pick a time at least a few minutes from now.");
+  const body = { clips: P.ids, platforms, privacy: document.querySelector('#pubPrivacy input:checked').value,
+                 start_at: startAt, every_hours: later && P.ids.length > 1 ? +$("pubEvery").value : 0 };
+  if (P.ids.length === 1) {
+    if ($("ytTitle").value.length > 100 || $("igCap").value.length > 2200) return ($("pubErr").textContent = "Shorten the title or caption first.");
+    body.post = { youtube: { title: $("ytTitle").value.trim(), description: $("ytDesc").value.trim(),
+                             tags: $("ytTags").value.split(",").map((t) => t.trim()).filter(Boolean) },
+                  instagram: { caption: $("igCap").value.trim() } };
+  }
+  $("pubGo").disabled = true;
+  try {
+    await api(`/jobs/${S.jobId}/publish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    P.platformsSent = platforms;
+    $("pubForm").classList.add("hidden"); $("pubProgress").classList.remove("hidden");
+    await pubPoll();
+  } catch (err) { $("pubErr").textContent = err.message; }
+  $("pubGo").disabled = false;
+};
+function renderPubRows() {
+  $("pubRows").innerHTML = P.ids.flatMap((id) => (P.platformsSent || []).map((p) => {
+    const s = ((S.pub.status || {})[id] || {})[p] || { state: "queued" };
+    const label = PLATS.find((x) => x[0] === p)[1];
+    let right;
+    if (s.state === "done") right = `<a href="${esc(s.url)}" target="_blank" rel="noopener"><b>Open ↗</b></a>`;
+    else if (s.state === "scheduled" || s.state === "waiting") right = `<span style="color:var(--color-accent-700);font-weight:700">${shortDate(s.at)}</span>`;
+    else if (s.state === "failed") right = `<span style="color:var(--color-accent-700);font-weight:700">Failed</span>`;
+    else right = `<span class="mono">${Math.round((s.pct || 0) * 100)}%</span>`;
+    const detail = s.state === "failed" ? s.error : s.state === "done" ? (s.note || "Posted") :
+      s.state === "scheduled" ? "Uploaded — YouTube publishes it at the scheduled time" : s.state === "waiting" ? "Will be posted at the scheduled time" : (s.step || "Waiting…");
+    return `<div class="pubrow"><div style="min-width:0"><b>${id}</b> → ${label}
+        <div style="font-size:12px;color:var(--color-neutral-700);overflow-wrap:anywhere">${esc(detail)}</div></div>
+      <div class="bar"><i style="width:${s.state === "done" || s.state === "scheduled" ? 100 : Math.round((s.pct || 0) * 100)}%"></i></div>
+      <div style="text-align:right">${right}</div></div>`;
+  })).join("");
+}
+function closePublish() { $("pub").classList.add("hidden"); P = null; }
+$("pubClose").onclick = closePublish; $("pubDone").onclick = closePublish;
+$("pub").addEventListener("click", (e) => { if (e.target === $("pub")) closePublish(); });
+addEventListener("keydown", (e) => { if (e.key === "Escape" && P) closePublish(); });
 
 // ---------------------------------------------------------------- start
 if (!location.hash) {               // reopened the tab: jump back into the job you were watching

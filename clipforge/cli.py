@@ -32,6 +32,28 @@ def _load_dotenv(path: str = ".env") -> None:
             os.environ.setdefault(k, v)
 
 
+def _publish_cli(a) -> None:
+    from pathlib import Path
+
+    from . import publish, social
+    out = Path(a.out)
+    m = json.loads((out / "clips.json").read_text(encoding="utf-8"))
+    c = next(x for x in m["clips"] if x["id"] == a.clip_id)
+    s = social.generate(c, m.get("language", "en"))
+    cover = out / f"{a.clip_id}.cover.jpg"
+    cover_ms = c["cover_ms"] if "cover_ms" in c and cover.exists() else social.pick_cover(out / c["file"], cover)
+    show = lambda st, pc: print(f"\r  {st:<36} {pc * 100:3.0f}%", end="", flush=True)  # noqa: E731
+    for platform in a.to.split(","):
+        print(f"{platform}:")
+        if platform == "youtube":
+            y = s["youtube"]
+            r = publish.youtube_upload(out / c["file"], y["title"], y["description"], y["tags"],
+                                       a.privacy, thumbnail=cover, progress=show)
+        else:
+            r = publish.instagram_upload(out / c["file"], s["instagram"]["caption"], cover_ms, progress=show)
+        print(f"\n  {r['url']}" + (f"\n  note: {r['note']}" if r.get("note") else ""))
+
+
 def main(argv=None) -> int:
     _load_dotenv()
     ap = argparse.ArgumentParser(prog="clipforge")
@@ -57,6 +79,15 @@ def main(argv=None) -> int:
     sub.add_parser("template", help="print the default brand template JSON")
     s = sub.add_parser("serve", help="start the HTTP API")
     s.add_argument("--port", type=int, default=8000)
+
+    sub.add_parser("accounts", help="show connected YouTube / Instagram accounts")
+    c = sub.add_parser("connect", help="connect a platform account")
+    c.add_argument("platform", choices=["youtube"])
+    p = sub.add_parser("publish", help="upload a rendered clip")
+    p.add_argument("out")
+    p.add_argument("clip_id")
+    p.add_argument("--to", default="youtube,instagram", help="youtube,instagram")
+    p.add_argument("--privacy", default="public", choices=["public", "unlisted", "private"])
     a = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):   # Windows consoles/pipes default to cp1252 (no “→”)
         sys.stdout.reconfigure(encoding="utf-8")
@@ -83,8 +114,25 @@ def main(argv=None) -> int:
         elif a.cmd == "serve":
             import uvicorn
             uvicorn.run("clipforge.server:app", host="0.0.0.0", port=a.port)
+        elif a.cmd == "accounts":
+            from .publish import accounts
+            for name, st in accounts().items():
+                state = f"connected as {st['name']}" if st["connected"] else st.get("error") or (
+                    "not connected" if st["configured"] else "not configured")
+                print(f"  {name:<10} {state}")
+        elif a.cmd == "connect":
+            from .publish import youtube_connect
+            acct = youtube_connect()
+            print(f"YouTube connected: {acct.get('title')}")
+        elif a.cmd == "publish":
+            _publish_cli(a)
     except ClipforgeError as err:
         print(f"error: {err}", file=sys.stderr)
+        return 2
+    except RuntimeError as err:          # PublishError and friends: one clear line, no traceback
+        if type(err).__name__ != "PublishError":
+            raise
+        print(f"\nerror: {err}", file=sys.stderr)
         return 2
     return 0
 

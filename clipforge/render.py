@@ -80,8 +80,12 @@ def _video_chain(info: MediaInfo, tpl: BrandTemplate, start: float, end: float,
             f";[vfit][vfill]overlay=0:0:enable='{enable_expr(fills)}'{punch}[vbase]"), label
 
 
+COVER_T0, COVER_STEP, COVER_N = 0.4, 0.5, 7      # thumbnail candidates at 0.4 s, 0.9 s … 3.4 s
+
+
 def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end: float,
-                ass_path: Path, out_path: Path, boundaries: list[float]) -> dict:
+                ass_path: Path, out_path: Path, boundaries: list[float],
+                cover_ass: Path | None = None) -> dict:
     W, H = tpl.size
     dur = end - start
     inputs = ["-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(src)]
@@ -89,6 +93,14 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
                                    ass_path.with_name(f"{out_path.stem}.crop.txt"))
     fonts = f":fontsdir='{_filter_path(tpl.fonts_dir)}'" if tpl.fonts_dir else ""
     g = [vchain, f"[vbase]ass='{ass_path.name}'{fonts}[vcap]"]
+    cover_out: list[str] = []
+    if cover_ass:   # same framing, hook only, no captions: a few candidate thumbnails in the first seconds
+        g[1:2] = ["[vbase]split[vmain][vcov]", f"[vmain]ass='{ass_path.name}'{fonts}[vcap]",
+                  f"[vcov]select='between(t,{COVER_T0},{COVER_T0 + COVER_N * COVER_STEP})*"
+                  f"(isnan(prev_selected_t)+gte(t-prev_selected_t,{COVER_STEP}))',"
+                  f"ass='{cover_ass.name}'{fonts}[vcovout]"]
+        cover_out = ["-map", "[vcovout]", "-fps_mode", "vfr", "-frames:v", str(COVER_N), "-q:v", "2",
+                     f"{out_path.stem}.cand_%d.jpg"]
     last = "vcap"
     if tpl.motion.progress_bar:
         h = tpl.motion.progress_height
@@ -128,14 +140,26 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
     run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(g),
          "-map", "[vout]", "-map", f"[{aout}]", "-r", "30", *_video_codec(),
          "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-t", f"{dur:.3f}",
-         tmp.name], cwd=ass_path.parent)
+         tmp.name, *cover_out], cwd=ass_path.parent)
     if tmp != out_path:
         _concat_intro_outro(tpl, ass_path.parent / tmp.name, out_path)
         (ass_path.parent / tmp.name).unlink(missing_ok=True)
-    thumb = out_path.with_suffix(".jpg")
-    run(["ffmpeg", "-y", "-v", "error", "-ss", f"{min(1.2, dur / 2):.2f}", "-i", str(out_path),
-         "-frames:v", "1", "-q:v", "3", str(thumb)])
-    return {"framing": framing, "thumbnail": thumb.name}
+    meta = {"framing": framing}
+    cands = sorted(ass_path.parent.glob(f"{out_path.stem}.cand_*.jpg"), key=lambda p: int(p.stem.rsplit("_", 1)[1]))
+    if cands:
+        from .social import best_frame
+        i = best_frame(cands)
+        cover = out_path.with_suffix(".cover.jpg")
+        cands[i].replace(cover)
+        for p in cands:
+            p.unlink(missing_ok=True)
+        meta |= {"thumbnail": cover.name, "cover_ms": int((COVER_T0 + i * COVER_STEP) * 1000)}
+    else:
+        thumb = out_path.with_suffix(".jpg")
+        run(["ffmpeg", "-y", "-v", "error", "-ss", f"{min(1.2, dur / 2):.2f}", "-i", str(out_path),
+             "-frames:v", "1", "-q:v", "3", str(thumb)])
+        meta["thumbnail"] = thumb.name
+    return meta
 
 
 def _concat_intro_outro(tpl: BrandTemplate, body: Path, out: Path) -> None:

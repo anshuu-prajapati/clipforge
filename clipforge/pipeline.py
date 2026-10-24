@@ -14,7 +14,7 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Callable, Optional
 
-from .captions import build_ass, group_lines, lines_from_json, lines_to_json
+from .captions import build_ass, build_cover_ass, group_lines, lines_from_json, lines_to_json
 from .hooks import Candidate, candidate_to_dict, find_moments
 from .media import ClipforgeError, extract_audio, fetch, preflight, probe, rms_envelope
 from .render import render_clip
@@ -147,8 +147,10 @@ def _render(entry: dict, src: Path, info, tpl: BrandTemplate, out: Path) -> dict
     ass = out / f"{entry['id']}.ass"
     ass.write_text(build_ass(lines_from_json(entry["lines"]), entry["hook"], tpl,
                              entry.get("emphasis_words", [])), encoding="utf-8")
+    cover_ass = out / f"{entry['id']}.cover.ass"
+    cover_ass.write_text(build_cover_ass(entry["hook"], tpl, entry.get("emphasis_words", [])), encoding="utf-8")
     meta = render_clip(str(src), info, tpl, entry["start"], entry["end"], ass,
-                       out / entry["file"], entry.get("boundaries", []))
+                       out / entry["file"], entry.get("boundaries", []), cover_ass)
     # what the dashboard needs to know whether an export must re-render
     meta["rendered_with"] = {"aspect": tpl.layout.aspect, "resolution": tpl.resolution,
                              "captions": tpl.captions.show, "minimal": tpl.captions.animation == "none",

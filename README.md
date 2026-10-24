@@ -67,6 +67,24 @@ with score, grade breakdown, why-this-clip, hook + alt hooks, emphasis words, ca
 | motion | progress bar, punch-in zoom on alternate sentences |
 | logo / intro & outro / music | overlay PNG; prepend/append video or image; music bed sidechain-ducked under voice |
 
+## Publishing (YouTube Shorts + Instagram Reels)
+Claude writes the YouTube title / description / tags and the Instagram caption + hashtags from what is
+said in each clip; every clip also gets a clean cover (the hook on the sharpest early frame, no captions).
+Publish from the dashboard (per clip, or select several and schedule one per day) or from the CLI.
+
+| | Setup |
+|---|---|
+| YouTube | Google Cloud project → enable **YouTube Data API v3** → OAuth client "Desktop app" → save as `credentials/client_secret.json`. On the OAuth consent screen add your Google account as a **test user**. Then click **Connect YouTube** in the dashboard (or `python -m clipforge connect youtube`). |
+| Instagram | Professional (Creator/Business) account; Meta app with *Instagram API with Instagram login*; add `INSTAGRAM_ACCESS_TOKEN=…` to `.env`. Videos are uploaded straight from disk (resumable upload), no public hosting needed. Long-lived tokens are refreshed automatically. |
+
+```powershell
+python -m clipforge accounts                                   # what is connected
+python -m clipforge publish out/ clip_01 --to youtube,instagram --privacy public
+```
+Limits: YouTube uploads cost 1,600 of the default 10,000 daily quota units (~6/day), and API projects that
+have not passed Google's audit can only upload **private** videos. Instagram allows 100 API posts / 24 h.
+`credentials/` and `.env` are git-ignored.
+
 ## API
 `POST /jobs` (file or url) → poll `GET /jobs/{id}` (per-step status) → `GET /jobs/{id}/clips` →
 `GET /jobs/{id}/files/clip_01.mp4` → `POST /jobs/{id}/clips/clip_01` `{hook, trim, lines, template}` to re-render.

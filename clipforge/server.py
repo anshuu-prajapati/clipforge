@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -219,6 +220,192 @@ def zip_clips(job_id: str, ids: str):
         for f in files:
             z.write(f, f.name)
     return FileResponse(tmp, filename="clipforge_clips.zip", background=BackgroundTask(os.unlink, tmp))
+
+
+# =========================================================================== publishing
+PUB_LOCK = threading.Lock()
+
+
+def _jread(p: Path, default):
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else default
+
+
+def _jwrite(p: Path, data) -> None:
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _clip(job_id: str, clip_id: str) -> tuple[dict, dict]:
+    m = get_clips(job_id)
+    c = next((c for c in m["clips"] if c["id"] == clip_id), None)
+    if not c:
+        raise HTTPException(404, "clip not found")
+    return m, c
+
+
+def _social_for(job_id: str, clip_id: str, regenerate: bool = False) -> dict:
+    """Post copy + cover for a clip, generated once and cached in social.json."""
+    from . import social
+    d = ROOT / job_id
+    with PUB_LOCK:
+        cache = _jread(d / "social.json", {})
+    m, c = _clip(job_id, clip_id)
+    s = cache.get(clip_id)
+    stale = s and s.get("clip_v") != [c["hook"], c["start"], c["end"]]
+    if s and not regenerate and not stale:
+        return s
+    s = social.generate(c, m.get("language", "en"))
+    cover = d / f"{clip_id}.cover.jpg"
+    if "cover_ms" in c and cover.exists():       # clean cover rendered with the clip (hook, no captions)
+        s["cover_ms"] = c["cover_ms"]
+    else:
+        s["cover_ms"] = social.pick_cover(d / c["file"], cover)
+    s["cover"] = cover.name
+    s["clip_v"] = [c["hook"], c["start"], c["end"]]
+    with PUB_LOCK:
+        cache = _jread(d / "social.json", {})
+        cache[clip_id] = s
+        _jwrite(d / "social.json", cache)
+    return s
+
+
+def _set_status(job_id: str, clip_id: str, platform: str, **kw) -> None:
+    with PUB_LOCK:
+        p = ROOT / job_id / "publish.json"
+        data = _jread(p, {})
+        data.setdefault(clip_id, {}).setdefault(platform, {}).update(kw, updated=time.time())
+        _jwrite(p, data)
+
+
+def _publish_one(job_id: str, clip_id: str, platform: str, opts: dict) -> None:
+    """Upload one clip to one platform (runs in a background thread)."""
+    from . import publish
+    d = ROOT / job_id
+    try:
+        _, c = _clip(job_id, clip_id)
+        s = _social_for(job_id, clip_id)
+        post = (opts.get("post") or {})
+        video = d / c["file"]
+        prog = lambda st, p: _set_status(job_id, clip_id, platform, state="running", step=st, pct=round(p, 3))  # noqa: E731
+        _set_status(job_id, clip_id, platform, state="running", step="starting", pct=0, error=None)
+        if platform == "youtube":
+            yt = {**s["youtube"], **(post.get("youtube") or {})}
+            at = opts.get("publish_at")
+            r = publish.youtube_upload(video, yt["title"], yt["description"], yt.get("tags", []),
+                                       privacy=opts.get("privacy", "public"),
+                                       publish_at=datetime.fromtimestamp(at, timezone.utc) if at else None,
+                                       thumbnail=d / s["cover"], progress=prog)
+        else:
+            ig = {**s["instagram"], **(post.get("instagram") or {})}
+            r = publish.instagram_upload(video, ig["caption"], s.get("cover_ms", 0), progress=prog)
+        _set_status(job_id, clip_id, platform, state="scheduled" if opts.get("publish_at") and platform == "youtube"
+                    else "done", pct=1, step="done", **r)
+    except Exception as e:  # noqa: BLE001
+        _set_status(job_id, clip_id, platform, state="failed", error=str(e)[:500])
+
+
+def _scheduler() -> None:
+    """Runs due items from schedule.json every 20 s (Instagram has no native scheduling)."""
+    while True:
+        due = []
+        with PUB_LOCK:
+            q = _jread(ROOT / "schedule.json", [])
+            now = time.time()
+            due = [x for x in q if x["at"] <= now]
+            if due:
+                _jwrite(ROOT / "schedule.json", [x for x in q if x["at"] > now])
+        for x in due:
+            threading.Thread(target=_publish_one, args=(x["job"], x["clip"], x["platform"], x["opts"]),
+                             daemon=True).start()
+        time.sleep(20)
+
+
+@app.on_event("startup")
+def _start_scheduler() -> None:
+    for p in ROOT.glob("*/publish.json"):        # uploads cut off by a restart: mark them so they can be retried
+        data = _jread(p, {})
+        for plats in data.values():
+            for st in plats.values():
+                if st.get("state") in ("queued", "running"):
+                    st.update(state="failed", error="Interrupted by a server restart — publish again.")
+        _jwrite(p, data)
+    threading.Thread(target=_scheduler, daemon=True).start()
+
+
+@app.get("/publish/accounts")
+def publish_accounts():
+    from . import publish
+    return publish.accounts()
+
+
+@app.post("/publish/youtube/connect")
+def youtube_connect():
+    from . import publish
+    try:
+        return publish.youtube_connect()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, str(e))
+
+
+@app.get("/jobs/{job_id}/publish")
+def publish_state(job_id: str):
+    d = ROOT / job_id
+    with PUB_LOCK:
+        return {"social": _jread(d / "social.json", {}), "status": _jread(d / "publish.json", {}),
+                "scheduled": [x for x in _jread(ROOT / "schedule.json", []) if x["job"] == job_id]}
+
+
+@app.post("/jobs/{job_id}/clips/{clip_id}/social")
+def clip_social(job_id: str, clip_id: str, regenerate: bool = False):
+    return _social_for(job_id, clip_id, regenerate)
+
+
+class PublishReq(BaseModel):
+    clips: list[str]
+    platforms: list[str]
+    privacy: str = "public"
+    start_at: Optional[float] = None           # unix seconds; None = now
+    every_hours: float = 0                     # spacing between clips when several are scheduled
+    post: Optional[dict] = None                # edited copy (single clip only)
+
+
+@app.post("/jobs/{job_id}/publish")
+def publish_clips(job_id: str, req: PublishReq):
+    if not set(req.platforms) <= {"youtube", "instagram"} or not req.platforms:
+        raise HTTPException(400, "platforms must be youtube and/or instagram")
+    for cid in req.clips:
+        _clip(job_id, cid)
+    if req.post and len(req.clips) == 1:       # save edits so the dialog shows them next time
+        with PUB_LOCK:
+            cache = _jread(ROOT / job_id / "social.json", {})
+            s = cache.get(req.clips[0], {})
+            for k in ("youtube", "instagram"):
+                if k in req.post:
+                    s.setdefault(k, {}).update(req.post[k])
+            cache[req.clips[0]] = s
+            _jwrite(ROOT / job_id / "social.json", cache)
+    now = time.time()
+    queued = []
+    for i, cid in enumerate(req.clips):
+        at = (req.start_at or now) + i * req.every_hours * 3600
+        for platform in req.platforms:
+            opts = {"privacy": req.privacy, "post": req.post if len(req.clips) == 1 else None}
+            if at <= now + 60:
+                _set_status(job_id, cid, platform, state="queued", pct=0, error=None, at=None)
+                threading.Thread(target=_publish_one, args=(job_id, cid, platform, opts), daemon=True).start()
+            elif platform == "youtube":         # YouTube: upload now, YouTube publishes at the time
+                opts["publish_at"] = at
+                _set_status(job_id, cid, platform, state="queued", pct=0, error=None, at=at)
+                threading.Thread(target=_publish_one, args=(job_id, cid, platform, opts), daemon=True).start()
+            else:                               # Instagram: our scheduler posts at the time
+                with PUB_LOCK:
+                    q = _jread(ROOT / "schedule.json", [])
+                    q.append({"job": job_id, "clip": cid, "platform": platform, "at": at, "opts": opts})
+                    _jwrite(ROOT / "schedule.json", q)
+                _set_status(job_id, cid, platform, state="waiting", pct=0, error=None, at=at)
+            queued.append({"clip": cid, "platform": platform, "at": at})
+    return {"queued": queued}
 
 
 class Edit(BaseModel):
