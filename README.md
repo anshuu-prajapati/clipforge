@@ -74,8 +74,8 @@ Publish from the dashboard (per clip, or select several and schedule one per day
 
 | | Setup |
 |---|---|
-| YouTube | Google Cloud project → enable **YouTube Data API v3** → OAuth client "Desktop app" → save as `credentials/client_secret.json`. On the OAuth consent screen add your Google account as a **test user**. Then click **Connect YouTube** in the dashboard (or `python -m clipforge connect youtube`). |
-| Instagram | Professional (Creator/Business) account; Meta app with *Instagram API with Instagram login*; add `INSTAGRAM_ACCESS_TOKEN=…` to `.env`. Videos are uploaded straight from disk (resumable upload), no public hosting needed. Long-lived tokens are refreshed automatically. |
+| YouTube | Google Cloud project → enable **YouTube Data API v3** → OAuth client "Desktop app" → put its `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` in `.env`. On the OAuth consent screen add your Google account as a **test user**. Then click **Connect YouTube** in the dashboard (or `python -m clipforge connect youtube`); the resulting `YOUTUBE_REFRESH_TOKEN` is written to `.env` for you. |
+| Instagram | Professional (Creator/Business) account; Meta app with *Instagram API with Instagram login*; add `INSTAGRAM_ACCESS_TOKEN=…` to `.env`. Videos are uploaded straight from disk (resumable upload), no public hosting needed. Long-lived tokens are refreshed weekly and the new token is written back to `.env`. |
 
 ```powershell
 python -m clipforge accounts                                   # what is connected
@@ -83,7 +83,7 @@ python -m clipforge publish out/ clip_01 --to youtube,instagram --privacy public
 ```
 Limits: YouTube uploads cost 1,600 of the default 10,000 daily quota units (~6/day), and API projects that
 have not passed Google's audit can only upload **private** videos. Instagram allows 100 API posts / 24 h.
-`credentials/` and `.env` are git-ignored.
+All keys and tokens live in `.env`, which is git-ignored (see `.env.example`).
 
 ## API
 `POST /jobs` (file or url) → poll `GET /jobs/{id}` (per-step status) → `GET /jobs/{id}/clips` →

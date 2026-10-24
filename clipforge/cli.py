@@ -9,27 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 
 from .media import ClipforgeError
 from .template import BrandTemplate
 
 
-def _load_dotenv(path: str = ".env") -> None:
-    """Read KEY=VALUE lines from ./.env into the environment (real env vars win)."""
-    try:
-        text = open(path, encoding="utf-8-sig").read()
-    except OSError:
-        return
-    for line in text.splitlines():
-        k, sep, v = line.strip().partition("=")
-        if sep and k and not k.startswith("#"):
-            k, v = k.strip(), v.strip().strip("'\"")
-            if k.endswith("_KEY") and os.environ.get(k, v) != v:
-                print(f"warning: {k} is set in this terminal and overrides .env "
-                      f"(run `Remove-Item Env:{k}` to use .env)", file=sys.stderr)
-            os.environ.setdefault(k, v)
+from .env import load as _load_dotenv
 
 
 def _publish_cli(a) -> None:

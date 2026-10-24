@@ -989,7 +989,7 @@ function renderAccts(a) {
     else if (ok) note = `Connected as <b>${esc(st.name)}</b>`;
     else if (st.error) note = `<span class="bad">${esc(st.error)}</span>`;
     else if (p === "youtube" && st.configured) { note = "Not connected yet"; action = `<button class="btn btn-secondary" data-connect="youtube">Connect YouTube</button>`; }
-    else if (p === "youtube") note = "Put your Google OAuth file at credentials\\client_secret.json";
+    else if (p === "youtube") note = "Add YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET to .env, then restart the server";
     else note = "Add INSTAGRAM_ACCESS_TOKEN=… to .env, then restart the server";
     const on = ok && (P.platforms ? P.platforms.has(p) : true);
     return `<div class="acct"><label class="check"><input type="checkbox" data-plat="${p}" ${ok ? "" : "disabled"} ${on ? "checked" : ""}></label>

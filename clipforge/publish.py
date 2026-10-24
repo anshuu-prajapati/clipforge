@@ -1,13 +1,15 @@
 """Upload clips to YouTube Shorts and Instagram Reels.
 
-YouTube   YouTube Data API v3 with OAuth (desktop client). credentials/client_secret.json is the
-          OAuth client from Google Cloud; the first connect opens a browser for consent and stores
-          credentials/youtube_token.json (refreshed automatically).
+All credentials live in .env (git-ignored):
+
+YouTube   YouTube Data API v3 with OAuth (Google Cloud "Desktop app" client):
+          YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET. The first connect opens a browser for consent
+          and writes YOUTUBE_REFRESH_TOKEN to .env; access tokens are minted from it on demand.
           Note: projects that have not passed Google's API audit can only upload *private* videos.
 Instagram Instagram API with Instagram Login (token "IGAA…", graph.instagram.com) or Facebook Login
-          (token "EAA…" + INSTAGRAM_USER_ID, graph.facebook.com). Reels are sent with resumable
-          upload straight from disk — no public hosting needed. INSTAGRAM_ACCESS_TOKEN comes from
-          .env; refreshed long-lived tokens are kept in credentials/instagram_token.json.
+          (token "EAA…" + INSTAGRAM_USER_ID, graph.facebook.com): INSTAGRAM_ACCESS_TOKEN.
+          Reels are sent with resumable upload straight from disk — no public hosting needed.
+          Long-lived tokens are refreshed weekly and written back to .env.
 """
 from __future__ import annotations
 
@@ -20,10 +22,9 @@ from typing import Callable, Optional
 
 import httpx
 
-CRED = Path(os.environ.get("CLIPFORGE_CREDENTIALS", "credentials"))
-YT_SECRET = CRED / "client_secret.json"
-YT_TOKEN = CRED / "youtube_token.json"
-IG_TOKEN = CRED / "instagram_token.json"
+from . import env
+
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 YT_SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
              "https://www.googleapis.com/auth/youtube.readonly"]
 IG_VERSION = os.environ.get("INSTAGRAM_API_VERSION", "v24.0")
@@ -36,29 +37,48 @@ class PublishError(RuntimeError):
 
 
 # =========================================================================== YouTube
+def _yt_client() -> Optional[tuple[str, str]]:
+    cid, secret = os.environ.get("YOUTUBE_CLIENT_ID"), os.environ.get("YOUTUBE_CLIENT_SECRET")
+    return (cid, secret) if cid and secret else None
+
+
+_yt_cache: dict = {}
+
+
 def _yt_creds(interactive: bool = False):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
 
-    creds = Credentials.from_authorized_user_file(str(YT_TOKEN), YT_SCOPES) if YT_TOKEN.exists() else None
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            YT_TOKEN.write_text(creds.to_json(), encoding="utf-8")
-        except Exception:  # noqa: BLE001 - revoked → reconnect
-            creds = None
-    if creds and creds.valid:
-        return creds
+    client, refresh = _yt_client(), os.environ.get("YOUTUBE_REFRESH_TOKEN")
+    if client and refresh:
+        creds = _yt_cache.get(refresh)
+        if creds is None:
+            creds = Credentials(None, refresh_token=refresh, token_uri=GOOGLE_TOKEN_URI,
+                                client_id=client[0], client_secret=client[1], scopes=YT_SCOPES)
+        if not creds.valid:
+            try:
+                creds.refresh(Request())
+            except Exception:  # noqa: BLE001 - revoked or client changed → reconnect
+                creds = None
+        if creds:
+            _yt_cache[refresh] = creds
+            return creds
     if not interactive:
         return None
-    if not YT_SECRET.exists():
-        raise PublishError(f"Put your Google OAuth client file at {YT_SECRET}")
+    if not client:
+        raise PublishError("Add YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET to .env")
     from google_auth_oauthlib.flow import InstalledAppFlow
-    flow = InstalledAppFlow.from_client_secrets_file(str(YT_SECRET), YT_SCOPES)
-    creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=300,
+    flow = InstalledAppFlow.from_client_config(
+        {"installed": {"client_id": client[0], "client_secret": client[1], "redirect_uris": ["http://localhost"],
+                       "auth_uri": "https://accounts.google.com/o/oauth2/auth", "token_uri": GOOGLE_TOKEN_URI}},
+        YT_SCOPES)
+    creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=300, prompt="consent",
                                   success_message="ClipForge is connected to YouTube. You can close this tab.")
-    CRED.mkdir(exist_ok=True)
-    YT_TOKEN.write_text(creds.to_json(), encoding="utf-8")
+    if not creds.refresh_token:
+        raise PublishError("Google did not return a refresh token — remove ClipForge from "
+                           "myaccount.google.com/permissions and connect again.")
+    env.save("YOUTUBE_REFRESH_TOKEN", creds.refresh_token)
+    _yt_cache[creds.refresh_token] = creds
     return creds
 
 
@@ -133,10 +153,6 @@ def _google_error(e) -> str:
 
 # =========================================================================== Instagram
 def _ig_token() -> Optional[str]:
-    if IG_TOKEN.exists():
-        d = json.loads(IG_TOKEN.read_text(encoding="utf-8"))
-        if d.get("source") == os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")[-12:]:
-            return d["token"]
     return os.environ.get("INSTAGRAM_ACCESS_TOKEN") or None
 
 
@@ -163,18 +179,17 @@ def _ig_refresh(token: str) -> str:
     """Long-lived Instagram Login tokens last 60 days; refresh weekly so they never expire."""
     if not token.startswith("IG"):
         return token
-    d = json.loads(IG_TOKEN.read_text(encoding="utf-8")) if IG_TOKEN.exists() else {}
-    if time.time() - d.get("refreshed", 0) < 7 * 86400:
+    last = float(os.environ.get("INSTAGRAM_TOKEN_REFRESHED") or 0)
+    if time.time() - last < 7 * 86400:
         return token
     try:
         r = _ig("GET", "https://graph.instagram.com/refresh_access_token",
                 params={"grant_type": "ig_refresh_token", "access_token": token})
     except PublishError:
-        return token                              # short-lived or too new to refresh — use as is
-    CRED.mkdir(exist_ok=True)
-    IG_TOKEN.write_text(json.dumps({"token": r["access_token"], "refreshed": time.time(),
-                                    "expires_in": r.get("expires_in"),
-                                    "source": os.environ.get("INSTAGRAM_ACCESS_TOKEN", "")[-12:]}), encoding="utf-8")
+        env.save("INSTAGRAM_TOKEN_REFRESHED", str(int(time.time() - 6 * 86400)))   # too new: retry tomorrow
+        return token
+    env.save("INSTAGRAM_ACCESS_TOKEN", r["access_token"])
+    env.save("INSTAGRAM_TOKEN_REFRESHED", str(int(time.time())))
     return r["access_token"]
 
 
@@ -234,7 +249,7 @@ def instagram_upload(video: Path, caption: str, cover_ms: int = 0,
 # =========================================================================== status
 def accounts() -> dict:
     """Connection status for the dashboard (never returns secrets)."""
-    out = {"youtube": {"configured": YT_SECRET.exists(), "connected": False},
+    out = {"youtube": {"configured": bool(_yt_client()), "connected": False},
            "instagram": {"configured": bool(_ig_token()), "connected": False}}
     try:
         a = youtube_account()

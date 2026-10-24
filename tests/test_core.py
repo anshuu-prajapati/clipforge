@@ -67,6 +67,18 @@ def test_heuristic_fallback(monkeypatch):
     assert clips and all(c.scorer == "heuristic" for c in clips)
 
 
+def test_env_save_replaces_and_appends_without_touching_other_lines(tmp_path, monkeypatch):
+    from clipforge import env
+    p = tmp_path / ".env"
+    p.write_text("ANTHROPIC_API_KEY=keep-me\n# comment\nYOUTUBE_REFRESH_TOKEN=\n", encoding="utf-8")
+    monkeypatch.delenv("YOUTUBE_REFRESH_TOKEN", raising=False)
+    monkeypatch.delenv("INSTAGRAM_ACCESS_TOKEN", raising=False)
+    env.save("YOUTUBE_REFRESH_TOKEN", "1//abc", p)
+    env.save("INSTAGRAM_ACCESS_TOKEN", "IGAAxyz", p)
+    assert p.read_text(encoding="utf-8").splitlines() == [
+        "ANTHROPIC_API_KEY=keep-me", "# comment", "YOUTUBE_REFRESH_TOKEN=1//abc", "INSTAGRAM_ACCESS_TOKEN=IGAAxyz"]
+
+
 def test_cut_detection():
     diffs = [1.0] * 30 + [60.0] + [1.0] * 30 + [55.0] + [1.0] * 10
     assert reframe._cuts(diffs, fps=30) == [1.0, 61 / 30]
