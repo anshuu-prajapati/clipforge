@@ -75,7 +75,7 @@ Publish from the dashboard (per clip, or select several and schedule one per day
 | | Setup |
 |---|---|
 | YouTube | Google Cloud project → enable **YouTube Data API v3** → OAuth client "Desktop app" → put its `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` in `.env`. On the OAuth consent screen add your Google account as a **test user**. Then click **Connect YouTube** in the dashboard (or `python -m clipforge connect youtube`); the resulting `YOUTUBE_REFRESH_TOKEN` is written to `.env` for you. |
-| Instagram | Professional (Creator/Business) account; Meta app with *Instagram API with Instagram login*; add `INSTAGRAM_ACCESS_TOKEN=…` to `.env`. Videos are uploaded straight from disk (resumable upload), no public hosting needed. Long-lived tokens are refreshed weekly and the new token is written back to `.env`. |
+| Instagram | Professional (Creator/Business) account **linked to a Facebook Page**; Meta app with *Instagram API with Facebook Login*; long-lived user token (`EAA…`, permissions `instagram_basic`, `instagram_content_publish`, `pages_show_list`, `pages_read_engagement`) in `INSTAGRAM_ACCESS_TOKEN`. Videos are uploaded straight from disk (resumable upload); the linked Instagram account ID is found and saved automatically. Instagram-Login tokens (`IGAA…`) only accept public video URLs, so they are not supported for uploads from disk. |
 
 ```powershell
 python -m clipforge accounts                                   # what is connected

@@ -193,6 +193,19 @@ def _ig_refresh(token: str) -> str:
     return r["access_token"]
 
 
+def _ig_find_user_id(token: str) -> Optional[str]:
+    """Facebook-Login token: find the Instagram account linked to the user's Page and remember it in .env."""
+    pages = _ig("GET", f"{_ig_base(token)}/me/accounts",
+                params={"fields": "name,instagram_business_account{id,username}", "access_token": token})
+    linked = [p["instagram_business_account"] for p in pages.get("data", []) if p.get("instagram_business_account")]
+    want = (os.environ.get("INSTAGRAM_USERNAME") or "").lstrip("@").lower()
+    pick = next((a for a in linked if a.get("username", "").lower() == want), linked[0] if linked else None)
+    if pick:
+        env.save("INSTAGRAM_USER_ID", pick["id"])
+        return pick["id"]
+    return None
+
+
 def instagram_account() -> Optional[dict]:
     token = _ig_token()
     if not token:
@@ -201,9 +214,11 @@ def instagram_account() -> Optional[dict]:
     if token.startswith("IG"):
         d = _ig("GET", f"{_ig_base(token)}/me", params={"fields": "user_id,username,account_type", "access_token": token})
         return {"id": d.get("user_id") or d.get("id"), "username": d.get("username"), "type": d.get("account_type")}
-    uid = os.environ.get("INSTAGRAM_USER_ID")
+    uid = os.environ.get("INSTAGRAM_USER_ID") or _ig_find_user_id(token)
     if not uid:
-        raise PublishError("Facebook-login token: also set INSTAGRAM_USER_ID in .env")
+        raise PublishError("No Instagram professional account is linked to the Facebook Pages this token can see. "
+                           "Link Instagram to your Page (Page settings → Linked accounts) and include the "
+                           "pages_show_list permission in the token.")
     d = _ig("GET", f"{_ig_base(token)}/{uid}", params={"fields": "username", "access_token": token})
     return {"id": uid, "username": d.get("username"), "type": "BUSINESS"}
 
@@ -213,6 +228,10 @@ def instagram_upload(video: Path, caption: str, cover_ms: int = 0,
     token = _ig_token()
     if not token:
         raise PublishError("Add INSTAGRAM_ACCESS_TOKEN to .env")
+    if token.startswith("IG"):
+        raise PublishError("This Instagram token (Instagram Login) can only post videos from a public link, "
+                           "not a file on this PC. Put a Facebook-Login token (starts with EAA, Instagram "
+                           "linked to a Facebook Page) in INSTAGRAM_ACCESS_TOKEN — it uploads straight from disk.")
     acct = instagram_account()
     base, token = _ig_base(token), _ig_token()
     progress("creating container", 0.02)

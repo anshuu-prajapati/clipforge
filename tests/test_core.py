@@ -79,6 +79,19 @@ def test_env_save_replaces_and_appends_without_touching_other_lines(tmp_path, mo
         "ANTHROPIC_API_KEY=keep-me", "# comment", "YOUTUBE_REFRESH_TOKEN=1//abc", "INSTAGRAM_ACCESS_TOKEN=IGAAxyz"]
 
 
+def test_instagram_user_id_found_from_facebook_pages(monkeypatch):
+    from clipforge import publish
+    pages = {"data": [{"name": "No IG"}, {"name": "Brand", "instagram_business_account": {"id": "178", "username": "brand"}},
+                      {"name": "Other", "instagram_business_account": {"id": "999", "username": "other"}}]}
+    saved = {}
+    monkeypatch.setattr(publish, "_ig", lambda *a, **k: pages)
+    monkeypatch.setattr(publish.env, "save", lambda k, v, *a: saved.update({k: v}))
+    monkeypatch.delenv("INSTAGRAM_USERNAME", raising=False)
+    assert publish._ig_find_user_id("EAAx") == "178" and saved == {"INSTAGRAM_USER_ID": "178"}
+    monkeypatch.setenv("INSTAGRAM_USERNAME", "@Other")
+    assert publish._ig_find_user_id("EAAx") == "999"
+
+
 def test_cut_detection():
     diffs = [1.0] * 30 + [60.0] + [1.0] * 30 + [55.0] + [1.0] * 10
     assert reframe._cuts(diffs, fps=30) == [1.0, 61 / 30]
