@@ -41,6 +41,8 @@ def _publish_cli(a) -> None:
 
 
 def main(argv=None) -> int:
+    import warnings
+    warnings.filterwarnings("ignore", category=FutureWarning, module=r"google\.")   # "upgrade Python by 2027" notice
     _load_dotenv()
     ap = argparse.ArgumentParser(prog="clipforge")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -105,6 +107,8 @@ def main(argv=None) -> int:
             for name, st in accounts().items():
                 state = f"connected as {st['name']}" if st["connected"] else st.get("error") or (
                     "not connected" if st["configured"] else "not configured")
+                if st["connected"] and st.get("error"):
+                    state += f"  ⚠ {st['error']}"
                 print(f"  {name:<10} {state}")
         elif a.cmd == "connect":
             from .publish import youtube_connect

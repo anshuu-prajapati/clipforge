@@ -280,6 +280,9 @@ def accounts() -> dict:
         a = instagram_account()
         if a:
             out["instagram"].update(connected=True, name="@" + (a.get("username") or "?"), type=a.get("type"))
+            if (_ig_token() or "").startswith("IG"):
+                out["instagram"]["error"] = ("connected, but this Instagram-Login token (IGAA…) cannot upload videos "
+                                             "from disk — use a Facebook-Login token (EAA…)")
     except Exception as e:  # noqa: BLE001
         out["instagram"]["error"] = str(e)[:200]
     return out

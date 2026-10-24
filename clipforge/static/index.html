@@ -983,7 +983,7 @@ function renderAccts(a) {
   P.accts = a;
   $("pubAccts").innerHTML = PLATS.map(([p, label]) => {
     const st = a && a[p];
-    let note, action = "", ok = !!(st && st.connected);
+    let note, action = "", ok = !!(st && st.connected && !st.error);   // connected-with-warning can't post
     if (!a) note = "Checking connection…";
     else if (a.error) note = `<span class="bad">${esc(a.error)}</span>`;
     else if (ok) note = `Connected as <b>${esc(st.name)}</b>`;
