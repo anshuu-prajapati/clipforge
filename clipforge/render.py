@@ -81,6 +81,9 @@ def _video_chain(info: MediaInfo, tpl: BrandTemplate, start: float, end: float,
 
 
 COVER_T0, COVER_STEP, COVER_N = 0.4, 0.5, 7      # thumbnail candidates at 0.4 s, 0.9 s … 3.4 s
+# within Instagram Reels / YouTube Shorts upload specs: AAC 48 kHz ≤128 kb/s stereo, TV-range H.264, faststart
+DELIVERY = ("-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2", "-color_range", "tv",
+            "-movflags", "+faststart")
 
 
 def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end: float,
@@ -118,10 +121,12 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
         g.append(f"[{last}][lg]overlay=x={pos[0]}:y={pos[1]}[vlogo]")
         last = "vlogo"
         n += 1
-    g.append(f"[{last}]format=yuv420p,fade=t=in:st=0:d=0.15[vout]")
+    # limited ("TV") range 4:2:0 — full-range yuvj420p sources otherwise leak through, and Instagram rejects them
+    g.append(f"[{last}]scale=out_range=tv,format=yuv420p,fade=t=in:st=0:d=0.15[vout]")
 
-    # audio: loudness-normalise speech; optional music bed ducked under the voice
-    g.append(f"[0:a]aresample=48000,loudnorm=I=-14:TP=-1.5:LRA=11,"
+    # audio: loudness-normalise speech; optional music bed ducked under the voice.
+    # loudnorm resamples to 192 kHz internally, so resample back to 48 kHz (Instagram's maximum).
+    g.append(f"[0:a]aresample=48000,loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,"
              f"afade=t=out:st={max(0, dur - 0.3):.3f}:d=0.3[voice]")
     aout = "voice"
     if tpl.music.path:
@@ -138,9 +143,8 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
 
     tmp = out_path.with_suffix(".body.mp4") if (tpl.intro_outro.intro_path or tpl.intro_outro.outro_path) else out_path
     run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(g),
-         "-map", "[vout]", "-map", f"[{aout}]", "-r", "30", *_video_codec(),
-         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-t", f"{dur:.3f}",
-         tmp.name, *cover_out], cwd=ass_path.parent)
+         "-map", "[vout]", "-map", f"[{aout}]", "-r", "30", *_video_codec(), *DELIVERY,
+         "-t", f"{dur:.3f}", tmp.name, *cover_out], cwd=ass_path.parent)
     if tmp != out_path:
         _concat_intro_outro(tpl, ass_path.parent / tmp.name, out_path)
         (ass_path.parent / tmp.name).unlink(missing_ok=True)
@@ -180,7 +184,7 @@ def _concat_intro_outro(tpl: BrandTemplate, body: Path, out: Path) -> None:
         labels += f"[v{i}][a{i}]"
     g.append(f"{labels}concat=n={len(parts)}:v=1:a=1[v][a]")
     run(["ffmpeg", "-y", "-v", "error", *args, "-filter_complex", ";".join(g), "-map", "[v]", "-map", "[a]",
-         *_video_codec(), "-c:a", "aac", "-movflags", "+faststart", str(out)])
+         *_video_codec(), *DELIVERY, str(out)])
 
 
 @functools.cache
