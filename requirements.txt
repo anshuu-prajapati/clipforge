@@ -11,4 +11,7 @@ yt-dlp
 google-api-python-client
 google-auth-oauthlib
 httpx
+# accounts + storage for the dashboard
+pymongo>=4.6
+cloudinary
 # ffmpeg is a system binary, not a pip/npm package — see README "Install"

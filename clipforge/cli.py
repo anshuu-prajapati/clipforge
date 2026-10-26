@@ -101,6 +101,22 @@ def main(argv=None) -> int:
             print(f"re-rendered {c['file']}")
         elif a.cmd == "serve":
             import uvicorn
+
+            from . import storage
+            from .db import DatabaseError, db
+            try:
+                d = db()
+                print(f"  MongoDB      connected (database '{d.name}', {d.users.estimated_document_count()} users)")
+            except DatabaseError as err:
+                print(f"  MongoDB      NOT connected — {err}")
+            if storage.enabled():
+                try:
+                    print(f"  Cloudinary   connected (cloud '{storage.check()}')")
+                except Exception as err:  # noqa: BLE001
+                    print(f"  Cloudinary   NOT connected — {str(err)[:160]}")
+            else:
+                print("  Cloudinary   off — add CLOUDINARY_URL to .env (clips stay on this PC)")
+            print(f"  Dashboard    http://localhost:{a.port}\n", flush=True)
             uvicorn.run("clipforge.server:app", host="0.0.0.0", port=a.port)
         elif a.cmd == "accounts":
             from .publish import accounts
