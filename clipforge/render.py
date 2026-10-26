@@ -1,6 +1,7 @@
 """Steps 3+5 — clip-cutter and render: cut, reframe, motion graphics, burn captions, mix audio."""
 from __future__ import annotations
 
+import copy
 import functools
 import os
 import shutil
@@ -164,6 +165,62 @@ def render_clip(src: str, info: MediaInfo, tpl: BrandTemplate, start: float, end
              "-frames:v", "1", "-q:v", "3", str(thumb)])
         meta["thumbnail"] = thumb.name
     return meta
+
+
+def render_preview(tpl: BrandTemplate, hook: str, lines_json: list[dict] | None, emphasis: list[str],
+                   src: str | None, start: float, out: Path) -> None:
+    """Single frame for the brand editor, rendered with the real ASS/libass pipeline.
+
+    Shows the moment the hook has popped in and a caption is on screen. Framing is a centre crop
+    (final clips follow the people in each shot)."""
+    from .captions import build_ass, group_lines
+    from .transcribe import Word
+
+    W, H = tpl.size
+    if lines_json:
+        words = [Word(**w) for ln in lines_json for w in ln["words"]]
+    else:
+        sample = "This is how your captions will look on every single clip".split()
+        words = [Word(w, 0.5 + i * 0.3, 0.5 + i * 0.3 + 0.28) for i, w in enumerate(sample)]
+    lines = group_lines(words, 0, max((w.end for w in words), default=10), tpl.captions.max_words)
+    first = next((ln for ln in lines if ln.end > 0.5), None)
+    t = max(0.6, (first.words[min(1, len(first.words) - 1)].start + 0.2) if first else 1.2)
+    shown = copy.deepcopy(tpl)                   # keep the hook on screen at t even if speech starts late
+    shown.headline.duration_s = max(tpl.headline.duration_s, t + 0.5)
+
+    ass = out.with_suffix(".ass")
+    ass.write_text(build_ass(lines, hook, shown, emphasis), encoding="utf-8")
+    fonts = f":fontsdir='{_filter_path(tpl.fonts_dir)}'" if tpl.fonts_dir else ""
+    if src and Path(src).exists():
+        inputs = ["-ss", f"{start + t:.3f}", "-i", str(src)]
+        if tpl.layout.framing == "fill":
+            base = (f"[0:v]crop='min(iw,ih*{W}/{H})':'min(ih,iw*{H}/{W})',"
+                    f"scale={W}:{H}:flags=lanczos,setsar=1[vb]")
+        else:
+            base = _fit_chain("0:v", tpl, "vb")
+    else:                                         # no project yet: neutral studio backdrop
+        inputs = ["-f", "lavfi", "-i", f"gradients=s={W}x{H}:c0=0x3b3934:c1=0x111111:d=1:speed=0"]
+        base = "[0:v]setsar=1[vb]"
+    g = [base, f"[vb]setpts=PTS-STARTPTS+{t:.3f}/TB,ass='{ass.name}'{fonts}[vc]"]
+    last = "vc"
+    if tpl.motion.progress_bar:
+        h = tpl.motion.progress_height
+        g.append(f"[{last}]drawbox=x=0:y={H - h}:w={int(W * 0.35)}:h={h}:"
+                 f"color={_hex(tpl.motion.progress_color)}@0.95:t=fill[vpb]")
+        last = "vpb"
+    if tpl.logo.path and Path(tpl.logo.path).exists():
+        inputs += ["-i", tpl.logo.path]
+        lw, m = int(W * tpl.logo.width_pct), int(W * 0.045)
+        pos = {"top-left": (f"{m}", f"{m}"), "top-right": (f"W-w-{m}", f"{m}"),
+               "bottom-left": (f"{m}", f"H-h-{m}"), "bottom-right": (f"W-w-{m}", f"H-h-{m}")}[tpl.logo.position]
+        g.append(f"[1:v]scale={lw}:-1,format=rgba,colorchannelmixer=aa={tpl.logo.opacity}[lg]")
+        g.append(f"[{last}][lg]overlay=x={pos[0]}:y={pos[1]}[vlogo]")
+        last = "vlogo"
+    try:
+        run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", ";".join(g), "-map", f"[{last}]",
+             "-frames:v", "1", "-q:v", "3", out.name], cwd=out.parent)
+    finally:
+        ass.unlink(missing_ok=True)
 
 
 def _concat_intro_outro(tpl: BrandTemplate, body: Path, out: Path) -> None:

@@ -147,11 +147,95 @@ async def create_job(file: Optional[UploadFile] = File(None), url: Optional[str]
            "source": url or (file.filename if file else ""), "title": (file.filename if file else url),
            "origin": origin, "length": length, "max_clips": max_clips, "created": time.time(),
            "input": {"source": source, "length": length, "max_clips": max_clips,
-                     "template": json.loads(template) if template else None}}
+                     "template": json.loads(template) if template else _brand().to_dict()}}
     JOBS[job_id] = job
     _save(job)
     _start(job)
     return job
+
+
+# =========================================================================== brand template
+BRAND = ROOT / "brand.json"
+BRAND_ASSETS = ROOT / "brand_assets"
+_FONT_FILES = {"Arial Black": "ariblk.ttf", "Impact": "impact.ttf", "Segoe UI Black": "seguibl.ttf",
+               "Segoe UI": "segoeui.ttf", "Bahnschrift": "bahnschrift.ttf", "Arial": "arial.ttf",
+               "Verdana": "verdana.ttf", "Trebuchet MS": "trebuc.ttf", "Tahoma": "tahoma.ttf",
+               "Georgia": "georgia.ttf", "Comic Sans MS": "comic.ttf", "Nirmala UI": "Nirmala.ttc",
+               "Poppins": "Poppins-Bold.ttf", "Montserrat": "Montserrat-Bold.ttf"}
+
+
+def _brand() -> BrandTemplate:
+    """The saved brand style; new videos are rendered with it."""
+    return BrandTemplate.load(BRAND) if BRAND.exists() else BrandTemplate()
+
+
+def _fonts() -> list[str]:
+    win = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    if not win.exists():
+        return list(_FONT_FILES)
+    found = [name for name, f in _FONT_FILES.items() if (win / f).exists()]
+    return found or list(_FONT_FILES)
+
+
+@app.get("/brand")
+def get_brand():
+    return {"template": _brand().to_dict(), "default": BrandTemplate().to_dict(), "fonts": _fonts(),
+            "saved": BRAND.exists()}
+
+
+@app.put("/brand")
+def put_brand(template: dict):
+    try:
+        tpl = BrandTemplate.from_dict(template)
+        tpl.size                                  # validates aspect
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Invalid template: {e}")
+    tpl.save(BRAND)
+    return {"template": tpl.to_dict()}
+
+
+class PreviewReq(BaseModel):
+    template: dict
+    job: Optional[str] = None
+    clip: Optional[str] = None
+    hook: Optional[str] = None
+
+
+@app.post("/brand/preview")
+def brand_preview(req: PreviewReq):
+    """One frame rendered with the real caption/hook renderer — what the clip will look like."""
+    from .render import render_preview
+    tpl = BrandTemplate.from_dict(req.template)
+    src, start, lines, emph, hook = None, 0.0, None, [], req.hook
+    if req.job and req.clip:
+        try:
+            m, c = _clip(req.job, req.clip)
+            src, start, lines, emph = m["source"], c["start"], c["lines"], c.get("emphasis_words", [])
+            hook = hook if hook is not None else c["hook"]
+        except HTTPException:
+            pass
+    BRAND_ASSETS.mkdir(exist_ok=True)
+    out = BRAND_ASSETS / f"_preview_{uuid.uuid4().hex[:8]}.jpg"
+    try:
+        render_preview(tpl, hook if hook is not None else "Your hook goes here", lines, emph, src, start, out)
+        data = out.read_bytes()
+    except ClipforgeError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        out.unlink(missing_ok=True)
+    from fastapi.responses import Response
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/brand/asset")
+async def brand_asset(file: UploadFile = File(...)):
+    """Upload a logo / music / intro / outro file; returns the path to put in the template."""
+    BRAND_ASSETS.mkdir(exist_ok=True)
+    name = re.sub(r"[^\w.-]", "_", Path(file.filename or "asset").name)[-80:]
+    dst = BRAND_ASSETS / f"{uuid.uuid4().hex[:6]}_{name}"
+    with dst.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"path": str(dst), "name": file.filename}
 
 
 @app.get("/jobs")
