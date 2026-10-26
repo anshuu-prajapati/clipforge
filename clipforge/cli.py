@@ -117,6 +117,9 @@ def main(argv=None) -> int:
                     print(f"  Cloudinary   NOT connected — {str(err)[:160]}")
             else:
                 print("  Cloudinary   off — add CLOUDINARY_URL to .env (clips stay on this PC)")
+            from . import mailer
+            print("  Email        " + (f"SMTP {os.environ['SMTP_HOST']}" if mailer.configured()
+                                      else "off — password-reset links are printed here (add SMTP_HOST to .env)"))
             print(f"  Dashboard    http://localhost:{a.port}\n", flush=True)
             uvicorn.run("clipforge.server:app", host="0.0.0.0", port=a.port)
         elif a.cmd == "accounts":
