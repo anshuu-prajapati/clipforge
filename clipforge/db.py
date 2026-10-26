@@ -34,6 +34,8 @@ def db():
         d.sessions.create_index([("user_id", ASCENDING), ("sid", ASCENDING)])
         d.login_attempts.create_index("at", expireAfterSeconds=3600)   # throttle window data cleans itself
         d.login_attempts.create_index("key")
+        d.password_resets.create_index("token", unique=True)
+        d.password_resets.create_index("expires", expireAfterSeconds=0)  # expired reset links vanish
     except PyMongoError as e:
         raise DatabaseError(f"Can't reach MongoDB: {e}") from None
     return d

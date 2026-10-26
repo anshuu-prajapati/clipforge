@@ -133,7 +133,9 @@ def auth_config():
         first = db().users.estimated_document_count() == 0
     except DatabaseError as e:
         return {"database": False, "error": str(e), "cloud": storage.enabled()}
-    return {"database": True, "first_user": first, "signup": auth.signup_mode(), "cloud": storage.enabled()}
+    from . import mailer
+    return {"database": True, "first_user": first, "signup": auth.signup_mode(), "cloud": storage.enabled(),
+            "email": mailer.configured()}
 
 
 @app.post("/auth/signup")
@@ -155,6 +157,85 @@ def login(c: Credentials, request: Request, response: Response):
         time.sleep(0.4)                           # slow down password guessing a little
         raise HTTPException(429 if "Too many" in str(e) else 400, str(e))
     return _login_response(user, request, response, c.remember)
+
+
+# --------------------------------------------------------------------------- forgot / reset password
+def _public_base(request: Request) -> str:
+    return (os.environ.get("PUBLIC_URL") or str(request.base_url)).rstrip("/")
+
+
+def _mask(email: str) -> str:
+    name, _, domain = email.partition("@")
+    return f"{name[:2]}{'•' * max(1, len(name) - 2)}@{domain}"
+
+
+def _send_safely(to: str, subject: str, text: str, html: str) -> None:
+    from . import mailer
+    try:
+        mailer.send(to, subject, text, html)
+    except Exception as e:  # noqa: BLE001 - never leak SMTP problems to the requester
+        print(f"  !! email to {_mask(to)} failed: {e}", flush=True)
+
+
+def _notify_password_changed(user: dict, request: Request) -> None:
+    from . import mailer
+    when = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    text = (f"The password of your ClipForge account ({user['email']}) was changed on {when} "
+            f"from IP {_ip(request) or 'unknown'}. All other devices were logged out.\n\n"
+            f"If this wasn't you, reset your password now: {_public_base(request)}/#/forgot")
+    html = mailer.html_page("Your password was changed",
+                            f"The password of <b>{user['email']}</b> was changed on {when} from IP "
+                            f"{_ip(request) or 'unknown'}. All other devices were logged out.<br><br>"
+                            "If this wasn't you, reset your password right away.",
+                            ("Reset my password", f"{_public_base(request)}/#/forgot"))
+    threading.Thread(target=_send_safely, args=(user["email"], "Your ClipForge password was changed", text, html),
+                     daemon=True).start()
+
+
+class ForgotReq(BaseModel):
+    email: str
+
+
+@app.post("/auth/forgot")
+def forgot_password(req: ForgotReq, request: Request):
+    """Always the same answer, whether or not the email has an account (no account discovery)."""
+    from . import mailer
+    found = auth.create_reset(req.email, _ip(request))
+    if found:
+        user, token = found
+        link = f"{_public_base(request)}/#/reset?token={token}"
+        text = (f"Someone asked to reset the password of your ClipForge account ({user['email']}).\n\n"
+                f"Choose a new password here (the link works once, for {auth.RESET_MINUTES} minutes):\n{link}\n\n"
+                "If you didn't ask for this, ignore this email — your password stays the same.")
+        html = mailer.html_page("Reset your password",
+                                f"Someone asked to reset the password of <b>{user['email']}</b>. The button works once, "
+                                f"for {auth.RESET_MINUTES} minutes.", ("Choose a new password", link))
+        threading.Thread(target=_send_safely, args=(user["email"], "Reset your ClipForge password", text, html),
+                         daemon=True).start()
+    return {"ok": True, "message": f"If an account exists for that email, we've sent a link to reset the password. "
+                                   f"It works for {auth.RESET_MINUTES} minutes."}
+
+
+@app.get("/auth/reset/{token}")
+def check_reset(token: str):
+    user = auth.reset_user(token)
+    return {"valid": bool(user), "email": _mask(user["email"]) if user else None}
+
+
+class ResetReq(BaseModel):
+    token: str
+    password: str
+    remember: bool = True
+
+
+@app.post("/auth/reset")
+def reset_password(req: ResetReq, request: Request, response: Response):
+    try:
+        user = auth.use_reset(req.token, req.password)
+    except auth.AuthError as e:
+        raise HTTPException(400, str(e))
+    _notify_password_changed(user, request)
+    return _login_response(user, request, response, req.remember)
 
 
 @app.post("/auth/logout")
@@ -959,8 +1040,7 @@ PROVIDERS = ("youtube", "instagram")
 
 
 def _redirect_uri(request: Request, provider: str) -> str:
-    base = (os.environ.get("PUBLIC_URL") or str(request.base_url)).rstrip("/")
-    return f"{base}/connect/{provider}/callback"
+    return f"{_public_base(request)}/connect/{provider}/callback"
 
 
 def _back(next_hash: str, **params) -> RedirectResponse:
@@ -1072,6 +1152,8 @@ def change_password(req: PasswordReq, request: Request, user: User):
     db().users.update_one({"_id": user["_id"]}, {"$set": {"password": auth.hash_password(req.new)}})
     keep = auth._token_hash(request.cookies.get(auth.COOKIE, ""))   # other devices are logged out
     db().sessions.delete_many({"user_id": user["_id"], "token": {"$ne": keep}})
+    db().password_resets.delete_many({"user_id": user["_id"]})        # outstanding reset links stop working
+    _notify_password_changed(user, request)
     return {"ok": True}
 
 

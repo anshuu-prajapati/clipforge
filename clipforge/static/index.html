@@ -295,13 +295,16 @@
         <span style="font-size:14px;color:var(--color-neutral-700)" id="authSub">Log in to your ClipForge account.</span>
       </div>
       <div class="field hidden" id="fName"><label for="aName">Name</label><input class="input" id="aName" autocomplete="name"></div>
-      <div class="field"><label for="aEmail">Email</label><input class="input" id="aEmail" type="email" autocomplete="email"></div>
-      <div class="field"><label for="aPass">Password</label><input class="input" id="aPass" type="password" autocomplete="current-password"></div>
+      <div class="field" id="fEmail"><label for="aEmail">Email</label><input class="input" id="aEmail" type="email" autocomplete="email"></div>
+      <div class="field" id="fPass"><label for="aPass" id="aPassLbl">Password</label><input class="input" id="aPass" type="password" autocomplete="current-password">
+        <button class="btn btn-ghost" type="button" id="aForgot" style="align-self:flex-end;font-size:13px;padding:2px 0">Forgot password?</button></div>
+      <div class="field hidden" id="fPass2"><label for="aPass2">Repeat new password</label><input class="input" id="aPass2" type="password" autocomplete="new-password"></div>
       <div class="field hidden" id="fCode"><label for="aCode">Invite code</label><input class="input" id="aCode" autocomplete="off"></div>
-      <label class="check"><input type="checkbox" id="aRemember" checked>Keep me logged in for 30 days</label>
+      <label class="check" id="fRemember"><input type="checkbox" id="aRemember" checked>Keep me logged in for 30 days</label>
       <div class="err" id="aErr" role="alert"></div>
       <button class="btn btn-primary btn-block" id="aGo" type="submit" style="padding:14px 16px;font-size:15px">Log in →</button>
       <span style="font-size:12px;color:var(--color-neutral-700)" id="aNote"></span>
+      <button class="btn btn-ghost hidden" type="button" id="aBack" style="align-self:flex-start;padding-left:0">← Back to log in</button>
     </form>
   </div>
 </section>
@@ -1786,36 +1789,72 @@ function showAuth() {
   for (const id of ["landing", "appNav", "processing", "results", "editor", "brand", "settings"]) $(id).classList.add("hidden");
   $("umenu").classList.add("hidden");
   $("authView").classList.remove("hidden");
-  setAuthMode(AUTH.config.first_user ? "signup" : AUTH.mode);
+  setAuthMode(AUTH.config.first_user ? "signup" : AUTH.mode === "signup" ? "signup" : "login");
 }
-function setAuthMode(mode) {
+function setAuthMode(mode, extra = {}) {               // login | signup | forgot | reset
   AUTH.mode = mode;
-  document.querySelector(`#authTabs input[value="${mode}"]`).checked = true;
-  const up = mode === "signup", cfg = AUTH.config;
+  const cfg = AUTH.config, up = mode === "signup", forgot = mode === "forgot", reset = mode === "reset";
+  if (!forgot && !reset) document.querySelector(`#authTabs input[value="${mode}"]`).checked = true;
+  $("authTabs").classList.toggle("hidden", forgot || reset);
+  $("aBack").classList.toggle("hidden", !(forgot || reset));
   $("fName").classList.toggle("hidden", !up);
   $("fCode").classList.toggle("hidden", !(up && cfg.signup === "code" && !cfg.first_user));
-  $("aPass").autocomplete = up ? "new-password" : "current-password";
-  $("authTitle").textContent = up ? (cfg.first_user ? "Create the owner account" : "Create your account") : "Welcome back";
-  $("authSub").textContent = up ? (cfg.first_user ? "You're the first user — you'll own existing projects and the publishing accounts."
-                                                  : "Your clips and settings are saved to your account.")
-                                : "Log in to your ClipForge account.";
-  $("aGo").textContent = up ? "Create account →" : "Log in →";
-  $("aNote").textContent = cfg.database === false ? "" : up ? "At least 8 characters. Passwords are stored as a salted hash." : "";
+  $("fEmail").classList.toggle("hidden", reset);
+  $("fPass").classList.toggle("hidden", forgot);
+  $("fPass2").classList.toggle("hidden", !reset);
+  $("fRemember").classList.toggle("hidden", forgot);
+  $("aForgot").classList.toggle("hidden", mode !== "login");
+  $("aPassLbl").textContent = reset ? "New password" : "Password";
+  $("aPass").autocomplete = up || reset ? "new-password" : "current-password";
+  $("authTitle").textContent = { signup: cfg.first_user ? "Create the owner account" : "Create your account",
+                                 login: "Welcome back", forgot: "Reset your password", reset: "Choose a new password" }[mode];
+  $("authSub").textContent = { signup: cfg.first_user ? "You're the first user — you'll own the existing projects."
+                                                      : "Your clips and settings are saved to your account.",
+                               login: "Log in to your ClipForge account.",
+                               forgot: "Enter your account's email and we'll send you a link to choose a new password.",
+                               reset: extra.email ? `For ${extra.email}. Every other device will be logged out.` : "" }[mode];
+  $("aGo").textContent = { signup: "Create account →", login: "Log in →", forgot: "Send reset link →", reset: "Save new password →" }[mode];
+  $("aNote").textContent = cfg.database === false ? "" : up || reset ? "At least 8 characters, not a common password. Stored as a salted hash."
+    : forgot && cfg.email === false ? "Email isn't set up on this server yet — the owner will see the link in the server window." : "";
   $("aErr").textContent = cfg.database === false ? "Database not connected: " + (cfg.error || "") : "";
   $("aGo").disabled = cfg.database === false || (up && cfg.signup === "closed" && !cfg.first_user);
   if (up && cfg.signup === "closed" && !cfg.first_user) $("aErr").textContent = "Sign-ups are closed — ask the owner for an account.";
 }
 $("authTabs").addEventListener("change", (e) => setAuthMode(e.target.value));
+$("aForgot").onclick = () => setAuthMode("forgot");
+$("aBack").onclick = () => { AUTH.reset = null; history.replaceState(null, "", "#/"); setAuthMode("login"); };
+async function showReset(token) {
+  showAuth();
+  let info = { valid: false };
+  try { info = await api(`/auth/reset/${encodeURIComponent(token)}`); } catch {}
+  history.replaceState(null, "", "#/reset");     // keep the token out of history and screenshots
+  if (!info.valid) { setAuthMode("forgot"); $("aErr").textContent = "That reset link is invalid or has expired — request a new one."; return; }
+  AUTH.reset = token;
+  setAuthMode("reset", { email: info.email });
+}
 $("authForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  $("aErr").textContent = ""; $("aGo").disabled = true;
-  const body = { email: $("aEmail").value, password: $("aPass").value, name: $("aName").value, code: $("aCode").value,
-                 remember: $("aRemember").checked };
+  const mode = AUTH.mode;
+  $("aErr").textContent = "";
+  if (mode === "reset" && $("aPass").value !== $("aPass2").value) return ($("aErr").textContent = "The two passwords don't match.");
+  $("aGo").disabled = true;
+  const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   try {
-    S.user = await api(`/auth/${AUTH.mode === "signup" ? "signup" : "login"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    AUTH.config.first_user = false; $("aPass").value = "";
-    renderUserChip(); toast(AUTH.mode === "signup" ? `Welcome, ${S.user.name}!` : `Welcome back, ${S.user.name}`);
+    if (mode === "forgot") {
+      const r = await api("/auth/forgot", json({ email: $("aEmail").value }));
+      $("aNote").textContent = ""; toast("Check your inbox");
+      $("authSub").textContent = r.message;
+      $("aGo").disabled = false; return;
+    }
+    S.user = mode === "reset"
+      ? await api("/auth/reset", json({ token: AUTH.reset, password: $("aPass").value, remember: $("aRemember").checked }))
+      : await api(`/auth/${mode === "signup" ? "signup" : "login"}`, json({ email: $("aEmail").value, password: $("aPass").value,
+          name: $("aName").value, code: $("aCode").value, remember: $("aRemember").checked }));
+    AUTH.config.first_user = false; AUTH.reset = null; $("aPass").value = ""; $("aPass2").value = "";
+    renderUserChip();
+    toast(mode === "signup" ? `Welcome, ${S.user.name}!` : mode === "reset" ? "Password changed — other devices were logged out" : `Welcome back, ${S.user.name}`);
     B.saved = null; B.cur = null;                // brand style is per account
+    if (mode === "reset") history.replaceState(null, "", "#/");
     route();
   } catch (err) { $("aErr").textContent = err.message; }
   $("aGo").disabled = false;
@@ -1844,6 +1883,9 @@ async function boot() {
   try { AUTH.config = await (await fetch("/auth/config")).json(); } catch { AUTH.config = { database: false, error: "server unreachable" }; }
   S.cloud = !!AUTH.config.cloud;
   if (AUTH.config.database === false) return showAuth();
+  const reset = location.hash.match(/^#\/reset\?token=([\w-]+)/);
+  if (reset) return showReset(reset[1]);          // link from the reset email
+  if (location.hash.startsWith("#/forgot")) { showAuth(); return setAuthMode("forgot"); }
   try { S.user = await api("/auth/me"); } catch { return showAuth(); }
   renderUserChip();
   if (!location.hash) {             // reopened the tab: jump back into the job you were watching

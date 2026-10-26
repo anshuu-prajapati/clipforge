@@ -107,8 +107,8 @@ def create_user(email: str, password: str, name: str = "", code: str = "") -> di
 
 
 # =========================================================================== brute-force throttle
-def _fails(key: str) -> int:
-    return db().login_attempts.count_documents({"key": key, "at": {"$gte": _now() - timedelta(minutes=LOCK_MINUTES)}})
+def _fails(key: str, minutes: int = LOCK_MINUTES) -> int:
+    return db().login_attempts.count_documents({"key": key, "at": {"$gte": _now() - timedelta(minutes=minutes)}})
 
 
 def _fail(*keys: str) -> None:
@@ -126,6 +126,49 @@ def login(email: str, password: str, ip: str = "") -> dict:
         _fail(ekey, *([ikey] if ip else []))
         raise AuthError("Wrong email or password.")
     db().login_attempts.delete_many({"key": ekey})
+    return user
+
+
+# =========================================================================== password reset
+RESET_MINUTES = 30
+MAX_RESETS_EMAIL, MAX_RESETS_IP = 3, 10            # per hour
+
+
+def create_reset(email: str, ip: str = "") -> Optional[tuple[dict, str]]:
+    """(user, one-time token) — or None for unknown emails / too many requests (caller answers the same)."""
+    email = email.strip().lower()
+    ekey, ikey = f"reset:{email}", f"resetip:{ip}"
+    if _fails(ekey, 60) >= MAX_RESETS_EMAIL or (ip and _fails(ikey, 60) >= MAX_RESETS_IP):
+        return None
+    _fail(ekey, *([ikey] if ip else []))
+    user = db().users.find_one({"email": email})
+    if not user:
+        return None
+    token = secrets.token_urlsafe(32)
+    now = _now()
+    db().password_resets.insert_one({"token": _token_hash(token), "user_id": user["_id"], "created": now,
+                                     "expires": now + timedelta(minutes=RESET_MINUTES), "ip": ip[:64]})
+    return user, token
+
+
+def reset_user(token: str) -> Optional[dict]:
+    r = db().password_resets.find_one({"token": _token_hash(token or "")})
+    if not r or _utc(r["expires"]) < _now():
+        return None
+    return db().users.find_one({"_id": r["user_id"]})
+
+
+def use_reset(token: str, new_password: str) -> dict:
+    """Set the new password, burn every reset link, and end every session of the account."""
+    user = reset_user(token)
+    if not user:
+        raise AuthError("This reset link is invalid or has expired — request a new one.")
+    if problem := password_problem(new_password, user["email"]):
+        raise AuthError(problem)
+    db().users.update_one({"_id": user["_id"]}, {"$set": {"password": hash_password(new_password)}})
+    db().password_resets.delete_many({"user_id": user["_id"]})
+    db().sessions.delete_many({"user_id": user["_id"]})
+    db().login_attempts.delete_many({"key": f"email:{user['email']}"})   # a locked-out owner can log in again
     return user
 
 
