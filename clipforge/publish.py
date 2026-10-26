@@ -225,16 +225,22 @@ def instagram_account() -> Optional[dict]:
 
 
 def instagram_upload(video: Path, caption: str, cover_ms: int = 0,
-                     progress: Progress = lambda s, p: None) -> dict:
-    token = _ig_token()
+                     progress: Progress = lambda s, p: None, token: Optional[str] = None,
+                     ig_user_id: Optional[str] = None) -> dict:
+    """Facebook-Login token (EAA…): resumable upload straight from disk.
+    token/ig_user_id: a user's saved account (dashboard); default = the .env account (CLI)."""
+    from_env = token is None
+    token = token or _ig_token()
     if not token:
         raise PublishError("Add INSTAGRAM_ACCESS_TOKEN to .env")
     if token.startswith("IG"):
         raise PublishError("This Instagram token (Instagram Login) can only post videos from a public link, "
                            "not a file on this PC. Put a Facebook-Login token (starts with EAA, Instagram "
                            "linked to a Facebook Page) in INSTAGRAM_ACCESS_TOKEN — it uploads straight from disk.")
-    acct = instagram_account()
-    base, token = _ig_base(token), _ig_token()
+    acct = instagram_account() if from_env else {"id": ig_user_id, "username": None}
+    base = _ig_base(token)
+    if from_env:
+        token = _ig_token()                       # may have been refreshed by instagram_account()
     progress("creating container", 0.02)
     c = _ig("POST", f"{base}/{acct['id']}/media",
             data={"media_type": "REELS", "upload_type": "resumable", "caption": caption[:2200],

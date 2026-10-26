@@ -92,28 +92,105 @@ def test_brand_is_per_user_and_new_jobs_use_it(client):
     assert stored["input"]["template"]["captions"]["highlight_color"] == "#00E676"
 
 
-def test_publish_needs_your_own_connection(client):
+def test_publish_needs_your_own_accounts(client):
     signup(client, "owner@example.com")
     member = TestClient(server.app)
     signup(member, "member@example.com")
     job = member.post("/jobs", data={"url": "https://youtu.be/abc123xyz"}).json()
     client.mem.jobs.update_one({"_id": job["id"]}, {"$set": {"manifest": {"source": "x", "clips": [{"id": "clip_01"}]}}})
-    acc = member.get("/publish/accounts").json()
-    assert acc["youtube"]["connected"] is False and acc["instagram"]["connected"] is False
-    r = member.post(f"/jobs/{job['id']}/publish", json={"clips": ["clip_01"], "platforms": ["youtube"]})
+    assert member.get("/accounts").json()["accounts"] == []
+    r = member.post(f"/jobs/{job['id']}/publish", json={"clips": ["clip_01"], "accounts": ["not-mine"]})
     assert r.status_code == 400 and "Settings" in r.json()["detail"]
 
 
-def test_connect_flow_ties_the_account_to_the_user_who_started_it(client, monkeypatch):
+@pytest.fixture
+def fake_verify(monkeypatch):
+    from clipforge import accounts
+
+    def yt(acct):
+        token = accounts.unseal(acct["refresh_token"])
+        if token == "bad":
+            raise accounts.PublishError("The refresh token is invalid or expired.")
+        return {"ext_id": "UC-" + token, "name": "Channel " + token}
+
+    def ig(acct):
+        tail = accounts.unseal(acct["access_token"])[-3:]
+        return {"ext_id": "1784" + tail, "name": "@ig" + tail, "kind": "facebook_login"}
+
+    monkeypatch.setattr(accounts, "verify_youtube", yt)
+    monkeypatch.setattr(accounts, "verify_instagram", ig)
+
+
+def test_many_accounts_added_by_hand(client, fake_verify, monkeypatch):
+    signup(client, "owner@example.com")
+
+    def add(**f):
+        return client.post("/accounts", json=f)
+
+    r = add(platform="youtube", client_id="cid.apps", client_secret="GOCSPX-secret", refresh_token="aaa", label="Main")
+    assert r.status_code == 200, r.text
+    a1 = r.json()
+    assert a1["name"] == "Channel aaa" and a1["default"] is True and a1["client_id"] == "cid.apps"
+    assert a1["stored"] == {"client_secret": "••••cret", "refresh_token": "••••"} and "GOCSPX" not in r.text
+    a2 = add(platform="youtube", client_id="cid2.apps", client_secret="GOCSPX-other", refresh_token="bbb").json()
+    assert a2["default"] is False
+    assert add(platform="youtube", client_id="cid.apps", client_secret="x", refresh_token="aaa").status_code == 400
+    bad = add(platform="youtube", client_id="cid.apps", client_secret="x", refresh_token="bad")
+    assert bad.status_code == 400 and "refresh token" in bad.json()["detail"]
+    ig1 = add(platform="instagram", access_token="EAA-token-111").json()
+    ig2 = add(platform="instagram", access_token="EAA-token-222").json()
+    assert ig1["name"] == "@ig111" and ig2["name"] == "@ig222"
+    stored = client.mem.users.find_one({"email": "owner@example.com"})["accounts"]
+    assert len(stored) == 4 and "EAA-token" not in str(stored) and "GOCSPX" not in str(stored)
+    # edit: new token keeps the stored secret; label only; make default
+    e = client.patch(f"/accounts/{a1['id']}", json={"refresh_token": "ccc"}).json()
+    assert e["name"] == "Channel ccc" and e["stored"]["client_secret"] == "••••cret"
+    assert client.patch(f"/accounts/{a2['id']}", json={"label": "Second"}).json()["label"] == "Second"
+    client.patch(f"/accounts/{a2['id']}", json={"default": True})
+    accts = {a["id"]: a for a in client.get("/accounts").json()["accounts"]}
+    assert accts[a2["id"]]["default"] and not accts[a1["id"]]["default"]
+    # publish to two chosen accounts → one status per account
+    calls = []
+    monkeypatch.setattr(server, "_publish_one", lambda job, clip, aid, opts: calls.append(aid))
+    job = client.post("/jobs", data={"url": "https://youtu.be/abc123xyz"}).json()
+    client.mem.jobs.update_one({"_id": job["id"]}, {"$set": {"manifest": {"source": "x", "clips": [{"id": "clip_01"}]}}})
+    r = client.post(f"/jobs/{job['id']}/publish", json={"clips": ["clip_01"], "accounts": [a1["id"], ig2["id"]]})
+    assert r.status_code == 200, r.text
+    import time as _t
+    _t.sleep(0.2)
+    assert sorted(calls) == sorted([a1["id"], ig2["id"]])
+    st = client.get(f"/jobs/{job['id']}/publish").json()["status"]["clip_01"]
+    assert st[ig2["id"]]["platform"] == "instagram" and st[ig2["id"]]["account"] == "@ig222"
+    # remove → the remaining account becomes the default
+    assert client.delete(f"/accounts/{a2['id']}").status_code == 200
+    left = [a for a in client.get("/accounts").json()["accounts"] if a["platform"] == "youtube"]
+    assert [a["id"] for a in left] == [a1["id"]] and left[0]["default"]
+    assert TestClient(server.app).get("/accounts").status_code == 401
+
+
+def test_import_env_accounts_owner_only(client, fake_verify, monkeypatch):
+    monkeypatch.setenv("YOUTUBE_CLIENT_ID", "envcid")
+    monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "envsecret")
+    monkeypatch.setenv("YOUTUBE_REFRESH_TOKEN", "env")
+    monkeypatch.setenv("INSTAGRAM_ACCESS_TOKEN", "EAA-env-999")
+    signup(client, "owner@example.com")
+    assert set(client.get("/accounts").json()["env"]) == {"youtube", "instagram"}
+    r = client.post("/accounts/import-env").json()
+    assert sorted(r["added"]) == ["@ig999", "Channel env"] and r["errors"] == []
+    member = TestClient(server.app)
+    signup(member, "member@example.com")
+    assert member.get("/accounts").json()["env"] == []
+    assert member.post("/accounts/import-env").status_code == 403
+
+
+def test_connect_flow_adds_an_account_for_the_user_who_started_it(client, monkeypatch):
     from clipforge import connections
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
     monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "secret")
-    monkeypatch.setattr(connections, "google_auth_url", lambda redirect, state: (f"https://accounts.google.com/o?state={state}", "verifier"))
-    seen = {}
-    def finish(redirect, code, verifier):
-        seen.update(redirect=redirect, code=code, verifier=verifier)
-        return {"refresh_token": connections.seal("refresh-123"), "id": "UC1", "name": "My Channel", "connected_at": 1}
-    monkeypatch.setattr(connections, "google_finish", finish)
+    monkeypatch.setattr(connections, "google_auth_url",
+                        lambda redirect, state: (f"https://accounts.google.com/o?state={state}", "verifier"))
+    monkeypatch.setattr(connections, "google_finish", lambda redirect, code, verifier: {
+        "refresh_token": connections.seal("refresh-123"), "id": "UC1", "name": "My Channel", "connected_at": 1})
     monkeypatch.setattr(connections, "google_revoke", lambda conn: None)
     signup(client, "owner@example.com")
     r = client.get("/connect/youtube/start?next=%23%2Fjob%2Fabc", follow_redirects=False)
@@ -122,20 +199,16 @@ def test_connect_flow_ties_the_account_to_the_user_who_started_it(client, monkey
     stranger = TestClient(server.app)                       # the provider redirect carries no cookie
     r = stranger.get(f"/connect/youtube/callback?state={state}&code=abc", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/#/job/abc?connected=youtube")
-    assert seen == {"redirect": "http://testserver/connect/youtube/callback", "code": "abc", "verifier": "verifier"}
-    owner_doc = client.mem.users.find_one({"email": "owner@example.com"})
-    assert owner_doc["connections"]["youtube"]["name"] == "My Channel"
-    assert "refresh-123" not in str(owner_doc)                # stored encrypted
-    assert connections.unseal(owner_doc["connections"]["youtube"]["refresh_token"]) == "refresh-123"
+    accts = client.get("/accounts").json()["accounts"]
+    assert [(a["name"], a["method"], a["default"]) for a in accts] == [("My Channel", "oauth", True)]
+    assert "refresh-123" not in str(client.mem.users.find_one({"email": "owner@example.com"}))
     again = stranger.get(f"/connect/youtube/callback?state={state}&code=abc", follow_redirects=False)
     assert "error=" in again.headers["location"]           # states are single-use
-    assert client.get("/publish/accounts").json()["youtube"] | {} == {
-        "configured": True, "connected": True, "name": "My Channel", "since": 1, "expires": None}
     member = TestClient(server.app)
     signup(member, "member@example.com")
-    assert member.get("/publish/accounts").json()["youtube"]["connected"] is False
-    assert client.delete("/connect/youtube").status_code == 200
-    assert client.get("/publish/accounts").json()["youtube"]["connected"] is False
+    assert member.get("/accounts").json()["accounts"] == []
+    assert client.delete(f"/accounts/{accts[0]['id']}").status_code == 200
+    assert client.get("/accounts").json()["accounts"] == []
 
 
 def test_connect_denied_or_unconfigured(client, monkeypatch):

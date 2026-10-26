@@ -504,61 +504,94 @@ def _social_for(job_id: str, clip_id: str, regenerate: bool = False) -> dict:
     return s
 
 
-def _set_status(job_id: str, clip_id: str, platform: str, **kw) -> None:
+def _set_status(job_id: str, clip_id: str, key: str, **kw) -> None:
+    """Publish status of one clip on one account (key = account id)."""
     kw["updated"] = time.time()
-    _set(job_id, **{f"publish.{clip_id}.{platform}.{k}": v for k, v in kw.items()})
+    _set(job_id, **{f"publish.{clip_id}.{key}.{k}": v for k, v in kw.items()})
 
 
-def _connection(user_id: str, platform: str) -> dict:
-    user = db().users.find_one({"_id": user_id}, {"connections": 1}) or {}
-    conn = (user.get("connections") or {}).get(platform)
-    if not conn:
-        name = "YouTube" if platform == "youtube" else "Instagram"
-        raise RuntimeError(f"Connect your {name} account in Settings first.")
-    return conn
+# =========================================================================== social accounts (many per platform)
+def _user_accounts(user: dict) -> list[dict]:
+    """The user's attached accounts; OAuth connections from before multi-account are migrated in."""
+    accts = list(user.get("accounts") or [])
+    legacy = user.get("connections") or {}
+    if legacy:
+        for p, c in legacy.items():
+            a = {"id": uuid.uuid4().hex[:12], "platform": p, "method": "oauth", "name": c.get("name"),
+                 "ext_id": c.get("id"), "created": c.get("connected_at", time.time()), "status": "ok",
+                 "default": not any(x["platform"] == p for x in accts)}
+            if p == "youtube":
+                a["refresh_token"] = c["refresh_token"]
+            else:
+                a.update(access_token=c["token"], refreshed=c.get("refreshed"), expires=c.get("expires"),
+                         kind="instagram_login")
+            accts.append(a)
+        db().users.update_one({"_id": user["_id"]}, {"$set": {"accounts": accts}, "$unset": {"connections": ""}})
+    return accts
 
 
-def _publish_one(job_id: str, clip_id: str, platform: str, opts: dict) -> None:
-    """Upload one clip to the job owner's own connected account (runs in a background thread)."""
-    from . import connections, publish
+def _account(user_id: str, account_id: str) -> dict:
+    user = db().users.find_one({"_id": user_id}) or {}
+    accts = _user_accounts(user)
+    if account_id in ("youtube", "instagram"):    # schedules made before multi-account: the default one
+        account_id = next((a["id"] for a in accts if a["platform"] == account_id and a.get("default")),
+                          next((a["id"] for a in accts if a["platform"] == account_id), ""))
+    acct = next((a for a in accts if a["id"] == account_id), None)
+    if not acct:
+        raise RuntimeError("This account was removed — pick another one in the publish dialog.")
+    return acct
+
+
+def _save_account(user_id: str, account_id: str, fields: dict) -> None:
+    db().users.update_one({"_id": user_id, "accounts.id": account_id},
+                          {"$set": {f"accounts.$.{k}": v for k, v in fields.items()}})
+
+
+def _publish_one(job_id: str, clip_id: str, account_id: str, opts: dict) -> None:
+    """Upload one clip to one of the job owner's accounts (runs in a background thread)."""
+    from . import accounts, publish
     d = ROOT / job_id
     try:
         user_id = db().jobs.find_one({"_id": job_id}, {"user_id": 1})["user_id"]
+        acct = _account(user_id, account_id)
+        key, platform = account_id, acct["platform"]
+        prog = lambda st, p: _set_status(job_id, clip_id, key, state="running", step=st, pct=round(p, 3))  # noqa: E731
+        _set_status(job_id, clip_id, key, platform=platform, account=acct.get("label") or acct.get("name"),
+                    state="running", step="starting", pct=0, error=None)
         _, c = _clip(job_id, clip_id)
         s = _social_for(job_id, clip_id)
         post = (opts.get("post") or {})
         video = d / c["file"]
-        prog = lambda st, p: _set_status(job_id, clip_id, platform, state="running", step=st, pct=round(p, 3))  # noqa: E731
-        _set_status(job_id, clip_id, platform, state="running", step="starting", pct=0, error=None)
-        conn = _connection(user_id, platform)
         if platform == "youtube":
             yt = {**s["youtube"], **(post.get("youtube") or {})}
             at = opts.get("publish_at")
             r = publish.youtube_upload(video, yt["title"], yt["description"], yt.get("tags", []),
                                        privacy=opts.get("privacy", "public"),
                                        publish_at=datetime.fromtimestamp(at, timezone.utc) if at else None,
-                                       thumbnail=d / s["cover"], progress=prog,
-                                       creds=connections.youtube_creds(conn))
+                                       thumbnail=d / s["cover"], progress=prog, creds=accounts.youtube_creds(acct))
         else:
             ig = {**s["instagram"], **(post.get("instagram") or {})}
-            if not (c.get("cloud") or {}).get("video"):   # Instagram needs a public URL: put the clip in the cloud
-                if not storage.enabled():
-                    raise RuntimeError("Instagram downloads videos from a public link — add CLOUDINARY_URL "
-                                       "to the server's .env so clips are stored in the cloud.")
-                prog("uploading to cloud storage", 0.03)
-                m = _cloud_sync(job_id, user_id, _manifest(job_id), {clip_id})
-                _save_manifest(job_id, m)
-                c = next(x for x in m["clips"] if x["id"] == clip_id)
+            token = accounts.instagram_token(acct, lambda upd: _save_account(user_id, acct["id"], upd))
+            if acct.get("kind") == "facebook_login":   # EAA token: resumable upload straight from disk
+                r = publish.instagram_upload(video, ig["caption"], s.get("cover_ms", 0), progress=prog,
+                                             token=token, ig_user_id=acct["ext_id"])
+            else:                                      # Instagram-Login token: Instagram fetches a public URL
                 if not (c.get("cloud") or {}).get("video"):
-                    raise RuntimeError("Cloud upload failed: " + c.get("cloud_error", "unknown error"))
-            save = lambda new: db().users.update_one({"_id": user_id}, {"$set": {"connections.instagram": new}})  # noqa: E731
-            r = publish.instagram_publish_url(connections.instagram_token(conn, save), conn["id"], c["cloud"]["video"],
-                                              ig["caption"], (c.get("cloud") or {}).get("thumb"), s.get("cover_ms", 0),
-                                              progress=prog)
-        _set_status(job_id, clip_id, platform, state="scheduled" if opts.get("publish_at") and platform == "youtube"
+                    if not storage.enabled():
+                        raise RuntimeError("This Instagram login posts from a public link — add CLOUDINARY_URL to "
+                                           "the server's .env, or use a Facebook-Login token (EAA…).")
+                    prog("uploading to cloud storage", 0.03)
+                    m = _cloud_sync(job_id, user_id, _manifest(job_id), {clip_id})
+                    _save_manifest(job_id, m)
+                    c = next(x for x in m["clips"] if x["id"] == clip_id)
+                    if not (c.get("cloud") or {}).get("video"):
+                        raise RuntimeError("Cloud upload failed: " + c.get("cloud_error", "unknown error"))
+                r = publish.instagram_publish_url(token, acct["ext_id"], c["cloud"]["video"], ig["caption"],
+                                                  (c.get("cloud") or {}).get("thumb"), s.get("cover_ms", 0), progress=prog)
+        _set_status(job_id, clip_id, key, state="scheduled" if opts.get("publish_at") and platform == "youtube"
                     else "done", pct=1, step="done", **r)
     except Exception as e:  # noqa: BLE001
-        _set_status(job_id, clip_id, platform, state="failed", error=str(e)[:500])
+        _set_status(job_id, clip_id, account_id, state="failed", error=str(e)[:500])
 
 
 def _scheduler() -> None:
@@ -567,30 +600,139 @@ def _scheduler() -> None:
     while True:
         try:
             while x := db().schedule.find_one_and_delete({"at": {"$lte": time.time()}}, sort=[("at", ASCENDING)]):
-                threading.Thread(target=_publish_one, args=(x["job"], x["clip"], x["platform"], x["opts"]),
-                                 daemon=True).start()
+                threading.Thread(target=_publish_one, args=(x["job"], x["clip"], x.get("account") or x["platform"],
+                                                            x["opts"]), daemon=True).start()
         except Exception:  # noqa: BLE001 - database hiccup: try again next round
             pass
         time.sleep(20)
 
 
-def _accounts(user: dict) -> dict:
-    """The user's own connections, for Settings and the publish dialog (no secrets)."""
-    from . import connections
-    conns = user.get("connections") or {}
-    out = {}
-    for p, configured in (("youtube", bool(connections.google_client())), ("instagram", bool(connections.instagram_app()))):
-        c = conns.get(p)
-        out[p] = {"configured": configured, "connected": bool(c), "name": c and c.get("name"),
-                  "since": c and c.get("connected_at"), "expires": c and c.get("expires")}
-    if not storage.enabled():
-        out["instagram"]["warning"] = "Needs cloud storage (CLOUDINARY_URL) on the server to post Reels."
-    return out
+def _accounts_payload(user: dict) -> dict:
+    from . import accounts, connections
+    accts = [accounts.public(a) for a in _user_accounts(user)]
+    for a in accts:
+        if a["platform"] == "instagram" and a.get("kind") != "facebook_login" and not storage.enabled():
+            a["warning"] = "Posts from a public link — needs CLOUDINARY_URL on the server (or an EAA… token)."
+    return {"accounts": accts, "cloud": storage.enabled(),
+            "oauth": {"youtube": bool(connections.google_client()), "instagram": bool(connections.instagram_app())},
+            "env": [p for p, _ in accounts.from_env()] if user.get("role") == "owner" else []}
 
 
 @app.get("/publish/accounts")
-def publish_accounts(user: User):
-    return _accounts(user)
+@app.get("/accounts")
+def list_accounts(user: User):
+    return _accounts_payload(user)
+
+
+class AccountReq(BaseModel):
+    platform: Optional[str] = None
+    label: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    refresh_token: Optional[str] = None
+    access_token: Optional[str] = None
+    ig_user_id: Optional[str] = None
+    default: Optional[bool] = None
+
+
+def _store_accounts(user_id: str, accts: list[dict]) -> None:
+    for p in ("youtube", "instagram"):               # exactly one default per platform that has accounts
+        mine = [a for a in accts if a["platform"] == p]
+        if mine and not any(a.get("default") for a in mine):
+            mine[0]["default"] = True
+    db().users.update_one({"_id": user_id}, {"$set": {"accounts": accts}})
+
+
+@app.post("/accounts")
+def add_account(req: AccountReq, user: User):
+    from . import accounts
+    from .publish import PublishError
+    try:
+        acct = accounts.build(req.platform or "", req.model_dump())
+    except PublishError as e:
+        raise HTTPException(400, str(e))
+    accts = _user_accounts(user)
+    dup = next((a for a in accts if a["platform"] == acct["platform"] and a.get("ext_id")
+                and a.get("ext_id") == acct.get("ext_id")), None)
+    if dup:
+        raise HTTPException(400, f"{acct['name']} is already added — edit it instead.")
+    acct["default"] = not any(a["platform"] == acct["platform"] for a in accts)
+    _store_accounts(user["_id"], accts + [acct])
+    return accounts.public(acct)
+
+
+@app.patch("/accounts/{account_id}")
+def edit_account(account_id: str, req: AccountReq, user: User):
+    from . import accounts
+    from .publish import PublishError
+    accts = _user_accounts(user)
+    i = next((k for k, a in enumerate(accts) if a["id"] == account_id), None)
+    if i is None:
+        raise HTTPException(404, "Account not found.")
+    fields = req.model_dump()
+    creds_changed = any(fields.get(f) for f in ("client_id", "client_secret", "refresh_token", "access_token")) \
+        or fields.get("ig_user_id") is not None
+    if creds_changed:
+        try:
+            accts[i] = accounts.build(accts[i]["platform"], fields, accts[i])
+        except PublishError as e:
+            raise HTTPException(400, str(e))
+    elif req.label is not None:
+        accts[i]["label"] = req.label.strip()[:40]
+    if req.default:
+        for a in accts:
+            if a["platform"] == accts[i]["platform"]:
+                a["default"] = a["id"] == account_id
+    _store_accounts(user["_id"], accts)
+    return accounts.public(accts[i])
+
+
+@app.post("/accounts/{account_id}/check")
+def check_account(account_id: str, user: User):
+    """Log in again with the stored credentials and refresh the name/status."""
+    from . import accounts
+    accts = _user_accounts(user)
+    a = next((x for x in accts if x["id"] == account_id), None)
+    if not a:
+        raise HTTPException(404, "Account not found.")
+    try:
+        info = accounts.verify_youtube(a) if a["platform"] == "youtube" else accounts.verify_instagram(a)
+        a.update({k: v for k, v in info.items() if k != "warning"}, status="ok", last_error=info.get("warning"))
+    except Exception as e:  # noqa: BLE001
+        a.update(status="error", last_error=str(e)[:300])
+    a["checked"] = time.time()
+    _store_accounts(user["_id"], accts)
+    return accounts.public(a)
+
+
+@app.delete("/accounts/{account_id}")
+def remove_account(account_id: str, user: User):
+    from . import connections
+    accts = _user_accounts(user)
+    a = next((x for x in accts if x["id"] == account_id), None)
+    if not a:
+        raise HTTPException(404, "Account not found.")
+    if a["platform"] == "youtube" and a.get("method") == "oauth":
+        connections.google_revoke(a)              # only revoke logins ClipForge created itself
+    _store_accounts(user["_id"], [x for x in accts if x["id"] != account_id])
+    db().schedule.delete_many({"user_id": user["_id"], "account": account_id})
+    return {"ok": True}
+
+
+@app.post("/accounts/import-env")
+def import_env_accounts(user: User):
+    """Owner: add the YouTube / Instagram accounts configured in the server's .env."""
+    from . import accounts
+    if user.get("role") != "owner":
+        raise HTTPException(403, "Only the owner can import the server's .env accounts.")
+    added, errors = [], []
+    for platform, fields in accounts.from_env():
+        try:
+            r = add_account(AccountReq(platform=platform, **fields), db().users.find_one({"_id": user["_id"]}))
+            added.append(r["name"])
+        except HTTPException as e:
+            errors.append(f"{platform}: {e.detail}")
+    return {"added": added, "errors": errors}
 
 
 @app.get("/jobs/{job_id}/publish")
@@ -608,7 +750,7 @@ def clip_social(job_id: str, clip_id: str, user: User, regenerate: bool = False)
 
 class PublishReq(BaseModel):
     clips: list[str]
-    platforms: list[str]
+    accounts: list[str]                        # account ids from /accounts (any mix of platforms)
     privacy: str = "public"
     start_at: Optional[float] = None           # unix seconds; None = now
     every_hours: float = 0                     # spacing between clips when several are scheduled
@@ -618,13 +760,13 @@ class PublishReq(BaseModel):
 @app.post("/jobs/{job_id}/publish")
 def publish_clips(job_id: str, req: PublishReq, user: User):
     _job(job_id, user, {"_id": 1})
-    if not set(req.platforms) <= {"youtube", "instagram"} or not req.platforms:
-        raise HTTPException(400, "platforms must be youtube and/or instagram")
+    mine = {a["id"]: a for a in _user_accounts(user)}
+    if not req.accounts:
+        raise HTTPException(400, "Pick at least one account.")
+    if any(a not in mine for a in req.accounts):
+        raise HTTPException(400, "Add your YouTube / Instagram accounts in Settings first.")
     for cid in req.clips:
         _clip(job_id, cid)
-    missing = [p for p in req.platforms if not (user.get("connections") or {}).get(p)]
-    if missing:
-        raise HTTPException(400, f"Connect your {' and '.join(m.capitalize() for m in missing)} account in Settings first.")
     if req.post and len(req.clips) == 1:       # keep edits so the dialog shows them next time
         _set(job_id, **{f"social.{req.clips[0]}.{k}.{f}": v for k in ("youtube", "instagram")
                         for f, v in (req.post.get(k) or {}).items()})
@@ -632,20 +774,22 @@ def publish_clips(job_id: str, req: PublishReq, user: User):
     queued = []
     for i, cid in enumerate(req.clips):
         at = (req.start_at or now) + i * req.every_hours * 3600
-        for platform in req.platforms:
+        for aid in req.accounts:
+            a = mine[aid]
+            meta = {"platform": a["platform"], "account": a.get("label") or a.get("name")}
             opts = {"privacy": req.privacy, "post": req.post if len(req.clips) == 1 else None}
             if at <= now + 60:
-                _set_status(job_id, cid, platform, state="queued", pct=0, error=None, at=None)
-                threading.Thread(target=_publish_one, args=(job_id, cid, platform, opts), daemon=True).start()
-            elif platform == "youtube":         # YouTube: upload now, YouTube publishes at the time
+                _set_status(job_id, cid, aid, state="queued", pct=0, error=None, at=None, **meta)
+                threading.Thread(target=_publish_one, args=(job_id, cid, aid, opts), daemon=True).start()
+            elif a["platform"] == "youtube":    # YouTube: upload now, YouTube publishes at the time
                 opts["publish_at"] = at
-                _set_status(job_id, cid, platform, state="queued", pct=0, error=None, at=at)
-                threading.Thread(target=_publish_one, args=(job_id, cid, platform, opts), daemon=True).start()
+                _set_status(job_id, cid, aid, state="queued", pct=0, error=None, at=at, **meta)
+                threading.Thread(target=_publish_one, args=(job_id, cid, aid, opts), daemon=True).start()
             else:                               # Instagram: our scheduler posts at the time
-                db().schedule.insert_one({"job": job_id, "user_id": user["_id"], "clip": cid,
-                                          "platform": platform, "at": at, "opts": opts})
-                _set_status(job_id, cid, platform, state="waiting", pct=0, error=None, at=at)
-            queued.append({"clip": cid, "platform": platform, "at": at})
+                db().schedule.insert_one({"job": job_id, "user_id": user["_id"], "clip": cid, "account": aid,
+                                          "platform": a["platform"], "at": at, "opts": opts})
+                _set_status(job_id, cid, aid, state="waiting", pct=0, error=None, at=at, **meta)
+            queued.append({"clip": cid, "account": aid, "at": at})
     return {"queued": queued}
 
 
@@ -703,26 +847,27 @@ def connect_callback(provider: str, state: str = "", code: str = "", error: str 
             conn = connections.instagram_finish(st["redirect"], code)
     except Exception as e:  # noqa: BLE001
         return _back(st["next"], error=f"Couldn't connect: {str(e)[:200]}")
-    db().users.update_one({"_id": st["user_id"]}, {"$set": {f"connections.{provider}": conn}})
+    user = db().users.find_one({"_id": st["user_id"]})
+    accts = _user_accounts(user)
+    acct = next((a for a in accts if a["platform"] == provider and a.get("ext_id") == conn["id"]), None)
+    if not acct:                                  # a new account; connecting the same one again refreshes it
+        acct = {"id": uuid.uuid4().hex[:12], "platform": provider, "method": "oauth", "created": time.time(),
+                "default": not any(a["platform"] == provider for a in accts)}
+        accts.append(acct)
+    acct.update(ext_id=conn["id"], name=conn["name"], status="ok", last_error=None, checked=time.time())
+    if provider == "youtube":
+        acct.update(refresh_token=conn["refresh_token"], client_id=None, client_secret=None)
+    else:
+        acct.update(access_token=conn["token"], refreshed=conn["refreshed"], expires=conn["expires"],
+                    kind="instagram_login")
+    _store_accounts(user["_id"], accts)
     return _back(st["next"], connected=provider, name=conn.get("name", ""))
-
-
-@app.delete("/connect/{provider}")
-def disconnect(provider: str, user: User):
-    from . import connections
-    if provider not in PROVIDERS:
-        raise HTTPException(404)
-    conn = (user.get("connections") or {}).get(provider)
-    if conn and provider == "youtube":
-        connections.google_revoke(conn)
-    db().users.update_one({"_id": user["_id"]}, {"$unset": {f"connections.{provider}": ""}})
-    return {"ok": True}
 
 
 # =========================================================================== settings: profile & account
 @app.get("/settings")
 def get_settings(request: Request, user: User):
-    return {"profile": {**auth.safe_user(user), "created": user.get("created")}, "accounts": _accounts(user),
+    return {"profile": {**auth.safe_user(user), "created": user.get("created")}, **_accounts_payload(user),
             "storage": "cloudinary" if storage.enabled() else "local",
             "public_url": os.environ.get("PUBLIC_URL") or None,
             "redirects": {p: _redirect_uri(request, p) for p in PROVIDERS}}
@@ -787,8 +932,9 @@ def delete_account(req: DeleteReq, response: Response, user: User):
         raise HTTPException(400, "Wrong password.")
     if db().jobs.find_one({"user_id": user["_id"], "state": {"$in": ["queued", "running"]}}, {"_id": 1}):
         raise HTTPException(409, "A video is still processing — wait for it to finish first.")
-    if (user.get("connections") or {}).get("youtube"):
-        connections.google_revoke(user["connections"]["youtube"])
+    for a in _user_accounts(user):
+        if a["platform"] == "youtube" and a.get("method") == "oauth":
+            connections.google_revoke(a)
     for j in db().jobs.find({"user_id": user["_id"]}, {"_id": 1}):
         shutil.rmtree(ROOT / j["_id"], ignore_errors=True)
     if storage.enabled():

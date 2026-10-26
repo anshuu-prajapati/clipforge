@@ -250,6 +250,16 @@
   .conn code { font: 600 11px var(--mono); background: var(--color-neutral-200); padding: 2px 5px; overflow-wrap: anywhere; }
   .danger { border-color: var(--color-accent-700); }
   .danger h4 { color: var(--color-accent-700); }
+  .arow { display: grid; grid-template-columns: auto 1fr auto; gap: 10px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--color-divider); }
+  .arow .dot { width: 10px; height: 10px; background: #16a34a; } .arow .dot.bad { background: var(--color-accent-700); }
+  .arow b { display: block; font-size: 15px; overflow-wrap: anywhere; }
+  .arow .meta { font-size: 12px; color: var(--color-neutral-700); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .arow .meta .tag { padding: 1px 6px; font-size: 10px; }
+  .arow .acts { display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
+  .arow .acts button { border: 0; background: none; font: 700 12px var(--font-body); padding: 4px 6px; cursor: pointer; color: var(--color-text); }
+  .arow .acts button:hover { color: var(--color-accent); text-decoration: underline; }
+  .arow .err { grid-column: 2 / -1; font-size: 12px; }
+  #acctHelpBody ol { margin: 0; padding-left: 20px; } #acctHelpBody li { margin: 4px 0; }
   .avatar { width: 64px; height: 64px; display: grid; place-items: center; background: var(--color-accent); color: #fff; font-size: 24px; font-weight: 800; flex: none; box-shadow: 4px 4px 0 var(--color-text); }
   .proj .del { opacity: 0; border: 0; background: none; cursor: pointer; font-size: 18px; color: var(--color-neutral-600); padding: 0 4px; }
   .proj:hover .del { opacity: 1; } .proj .del:hover { color: var(--color-accent-700); }
@@ -407,7 +417,7 @@
   <div class="setgrid">
     <div class="setcard wide">
       <h4>Connected accounts</h4>
-      <p>Connect your own channels so ClipForge can post Shorts and Reels for you. You approve access on Google / Instagram — ClipForge never sees your passwords, and you can disconnect any time.</p>
+      <p>Add as many YouTube channels and Instagram accounts as you like — paste their credentials (Client ID, secret, token) or sign in. Each one is checked when you save it; secrets are stored encrypted. Pick which ones to post to in the Publish dialog.</p>
       <div class="conns" id="conns"></div>
     </div>
     <div class="setcard">
@@ -609,6 +619,24 @@
     </div>
   </div>
 </div>
+<!-- ============================================================ ADD / EDIT ACCOUNT -->
+<div class="dialog-backdrop hidden" id="acctDlg">
+  <form class="dialog" role="dialog" aria-modal="true" id="acctForm" style="width:min(640px,100%);max-height:calc(100vh - 32px);overflow:auto" novalidate>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+      <div style="display:flex;gap:12px;align-items:center"><span id="acctIcon"></span><div class="dialog-title" id="acctTitle">Add account</div></div>
+      <button class="btn btn-icon" type="button" id="acctClose" style="width:32px;height:32px" aria-label="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div id="acctFields" style="display:flex;flex-direction:column;gap:14px"></div>
+    <details class="grp" id="acctHelp"><summary style="font-size:15px">Where do I get these?</summary><div id="acctHelpBody" style="font-size:13px;line-height:1.55;padding-bottom:8px"></div></details>
+    <div class="err" id="acctErr" role="alert"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-primary" type="submit" id="acctSave">Save &amp; check</button>
+      <button class="btn btn-secondary" type="button" id="acctCancel">Cancel</button>
+    </div>
+    <span style="font-size:12px;color:var(--color-neutral-700)">ClipForge logs in with these right away to check them. Secrets are stored encrypted and are never shown again.</span>
+  </form>
+</div>
+
 <!-- ============================================================ PUBLISH -->
 <div class="dialog-backdrop hidden" id="pub">
   <div class="dialog wide" role="dialog" aria-modal="true">
@@ -1234,17 +1262,16 @@ $("expRun").onclick = async () => {
 // ---------------------------------------------------------------- publish
 S.pub = { status: {}, social: {}, scheduled: [] };
 let P = null;            // open publish dialog: { ids }
-const PLATS = [["youtube", "YouTube Shorts", "YT"], ["instagram", "Instagram Reels", "IG"]];
 const shortDate = (ts) => new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 async function loadPub() { if (S.jobId) { try { S.pub = await api(`/jobs/${S.jobId}/publish`); } catch {} } }
 function pubBadges(id) {
   const st = (S.pub.status || {})[id] || {};
-  return PLATS.filter(([p]) => st[p]).map(([p, , n]) => {
-    const s = st[p];
-    if (s.state === "done") return `<a class="badge done" href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.note || "Posted")}">${n} ✓ posted</a>`;
-    if (s.state === "scheduled" || s.state === "waiting") return `<span class="badge sched" title="Goes live ${esc(new Date(s.at * 1000).toLocaleString())}">${n} · ${shortDate(s.at)}</span>`;
-    if (s.state === "failed") return `<span class="badge fail" title="${esc(s.error)}">${n} failed</span>`;
-    return `<span class="badge run">${n} ${Math.round((s.pct || 0) * 100)}%</span>`;
+  return Object.entries(st).map(([key, s]) => {      // one badge per account (older entries are keyed by platform)
+    const n = (s.platform || key) === "youtube" ? "YT" : "IG", who = s.account ? ` ${esc(s.account)}` : "";
+    if (s.state === "done") return `<a class="badge done" href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.note || "Posted")}">${n} ✓${who}</a>`;
+    if (s.state === "scheduled" || s.state === "waiting") return `<span class="badge sched" title="Goes live ${esc(new Date(s.at * 1000).toLocaleString())}">${n}${who} · ${shortDate(s.at)}</span>`;
+    if (s.state === "failed") return `<span class="badge fail" title="${esc(s.error)}">${n}${who} failed</span>`;
+    return `<span class="badge run">${n}${who} ${Math.round((s.pct || 0) * 100)}%</span>`;
   }).join("");
 }
 const pubBusy = () => Object.values(S.pub.status || {}).some((pl) => Object.values(pl).some((s) => ["queued", "running"].includes(s.state)));
@@ -1275,25 +1302,25 @@ async function openPublish(ids) {
   api("/publish/accounts").then(renderAccts).catch((e) => renderAccts({ error: e.message }));
   if (single) loadSocial(ids[0], false);
 }
-function renderAccts(a) {
-  P.accts = a;
-  $("pubAccts").innerHTML = PLATS.map(([p, label]) => {
-    const st = a && a[p];
-    let note, action = "", ok = !!(st && st.connected && !st.warning);   // connected-with-warning can't post
-    const back = P.ids.length === 1 ? `#/job/${S.jobId}/${P.ids[0]}/publish` : `#/job/${S.jobId}`;
-    if (!a) note = "Checking connection…";
-    else if (a.error) note = `<span class="bad">${esc(a.error)}</span>`;
-    else if (ok) note = `Your account: <b>${esc(st.name)}</b>`;
-    else if (st.warning) note = `<span class="bad">${esc(st.warning)}</span>`;
-    else if (st.configured) { note = "Not connected yet"; action = `<a class="btn btn-secondary" href="${connectUrl(p, back)}">Connect</a>`; }
-    else note = "Not available on this server yet — see Settings";
-    const on = ok && (P.platforms ? P.platforms.has(p) : true);
-    return `<div class="acct"><label class="check"><input type="checkbox" data-plat="${p}" ${ok ? "" : "disabled"} ${on ? "checked" : ""}></label>
-      <div><span class="nm">${label}</span><small${/class="bad"/.test(note) ? ' class="bad"' : ""}>${note}</small></div>${action}</div>`;
-  }).join("");
-  P.platforms = new Set($$("#pubAccts input[data-plat]:checked").map((x) => x.dataset.plat));
+function renderAccts(d) {
+  P.accts = d;
+  if (!d) return ($("pubAccts").innerHTML = `<div class="acct"><span></span><div><small>Loading your accounts…</small></div></div>`);
+  if (d.error) return ($("pubAccts").innerHTML = `<div class="acct"><span></span><div><small class="bad">${esc(d.error)}</small></div></div>`);
+  if (!d.accounts.length) return ($("pubAccts").innerHTML = `<div class="acct"><span></span><div><span class="nm">No accounts yet</span>
+      <small>Add your YouTube and Instagram accounts in Settings first.</small></div><a class="btn btn-secondary" href="#/settings">Open Settings</a></div>`);
+  const first = !P.chosen;
+  P.chosen = P.chosen || new Set(d.accounts.filter((a) => a.default && a.status !== "error" && !a.warning).map((a) => a.id));
+  $("pubAccts").innerHTML = d.accounts.map((a) => {
+    const bad = a.status === "error" || a.warning;
+    const note = bad ? `<small class="bad">${esc(a.warning || a.last_error || "Check this account in Settings")}</small>`
+                     : `<small>${a.platform === "youtube" ? "YouTube Shorts" : "Instagram Reels"}${a.label ? " · " + esc(a.label) : ""}${a.default ? " · default" : ""}</small>`;
+    return `<div class="acct"><label class="check"><input type="checkbox" data-acct="${a.id}" ${bad ? "disabled" : ""} ${!bad && P.chosen.has(a.id) ? "checked" : ""}></label>
+      <div style="display:flex;gap:10px;align-items:center;min-width:0">${ICONS[a.platform].replace(/width="44" height="44"/, 'width="26" height="26"')}
+        <div style="min-width:0"><span class="nm">${esc(a.name || "Account")}</span>${note}</div></div><span></span></div>`;
+  }).join("") + `<div style="padding-top:8px"><a href="#/settings" style="font-size:13px">Manage accounts in Settings →</a></div>`;
+  if (first) P.chosen = new Set($$("#pubAccts input[data-acct]:checked").map((x) => x.dataset.acct));
 }
-$("pubAccts").addEventListener("change", (e) => { if (e.target.dataset.plat) P.platforms = new Set($$("#pubAccts input[data-plat]:checked").map((x) => x.dataset.plat)); });
+$("pubAccts").addEventListener("change", (e) => { if (e.target.dataset.acct) P.chosen = new Set($$("#pubAccts input[data-acct]:checked").map((x) => x.dataset.acct)); });
 const connectUrl = (p, next) => `/connect/${p}/start?next=${encodeURIComponent(next)}`;
 async function loadSocial(id, regenerate) {
   $("pubGen").textContent = regenerate ? "Rewriting with AI…" : "Writing titles and captions…";
@@ -1322,12 +1349,12 @@ function whenChanged() {
 $("pubWhen").addEventListener("change", whenChanged);
 $("pubGo").onclick = async () => {
   $("pubErr").textContent = "";
-  const platforms = [...(P.platforms || [])];
-  if (!platforms.length) return ($("pubErr").textContent = "Pick at least one connected account.");
+  const accts = [...(P.chosen || [])];
+  if (!accts.length) return ($("pubErr").textContent = "Pick at least one account.");
   const later = document.querySelector('#pubWhen input:checked').value === "later";
   const startAt = later ? new Date($("pubAt").value).getTime() / 1000 : null;
   if (later && !(startAt > Date.now() / 1000 + 120)) return ($("pubErr").textContent = "Pick a time at least a few minutes from now.");
-  const body = { clips: P.ids, platforms, privacy: document.querySelector('#pubPrivacy input:checked').value,
+  const body = { clips: P.ids, accounts: accts, privacy: document.querySelector('#pubPrivacy input:checked').value,
                  start_at: startAt, every_hours: later && P.ids.length > 1 ? +$("pubEvery").value : 0 };
   if (P.ids.length === 1) {
     if ($("ytTitle").value.length > 100 || $("igCap").value.length > 2200) return ($("pubErr").textContent = "Shorten the title or caption first.");
@@ -1338,16 +1365,17 @@ $("pubGo").onclick = async () => {
   $("pubGo").disabled = true;
   try {
     await api(`/jobs/${S.jobId}/publish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    P.platformsSent = platforms;
+    P.sent = accts;
     $("pubForm").classList.add("hidden"); $("pubProgress").classList.remove("hidden");
     await pubPoll();
   } catch (err) { $("pubErr").textContent = err.message; }
   $("pubGo").disabled = false;
 };
 function renderPubRows() {
-  $("pubRows").innerHTML = P.ids.flatMap((id) => (P.platformsSent || []).map((p) => {
-    const s = ((S.pub.status || {})[id] || {})[p] || { state: "queued" };
-    const label = PLATS.find((x) => x[0] === p)[1];
+  $("pubRows").innerHTML = P.ids.flatMap((id) => (P.sent || []).map((aid) => {
+    const s = ((S.pub.status || {})[id] || {})[aid] || { state: "queued" };
+    const a = (P.accts?.accounts || []).find((x) => x.id === aid) || {};
+    const label = `${a.platform === "youtube" ? "YouTube" : "Instagram"} · ${esc(a.name || s.account || "")}`;
     let right;
     if (s.state === "done") right = `<a href="${esc(s.url)}" target="_blank" rel="noopener"><b>Open ↗</b></a>`;
     else if (s.state === "scheduled" || s.state === "waiting") right = `<span style="color:var(--color-accent-700);font-weight:700">${shortDate(s.at)}</span>`;
@@ -1575,30 +1603,116 @@ async function openSettings() {
   ["pfErr", "pwErr", "delErr"].forEach((id) => ($(id).textContent = ""));
   renderConns();
 }
+function acctRow(a) {
+  const tags = [a.default ? `<span class="tag tag-accent">Default</span>` : "",
+                a.label ? `<span class="tag tag-neutral">${esc(a.label)}</span>` : "",
+                `<span>${a.method === "oauth" ? "signed in" : "added by hand"}${a.kind === "facebook_login" ? " · Facebook login" : a.kind === "instagram_login" ? " · Instagram login" : ""}</span>`,
+                a.client_id ? `<span class="mono" title="Client ID">${esc(a.client_id.slice(0, 14))}…</span>` : "",
+                ...Object.entries(a.stored || {}).map(([k, v]) => `<span class="mono" title="${k.replace("_", " ")}">${esc(v)}</span>`)].join("");
+  const problem = a.warning || (a.status === "error" ? a.last_error : a.last_error);
+  return `<div class="arow" data-id="${a.id}"><i class="dot ${a.status === "error" ? "bad" : ""}"></i>
+    <div style="min-width:0"><b>${esc(a.name || "Account")}</b><div class="meta">${tags}</div></div>
+    <div class="acts"><button type="button" data-check>Check</button><button type="button" data-edit-acct>Edit</button>
+      ${a.default ? "" : `<button type="button" data-default>Make default</button>`}<button type="button" data-remove>Remove</button></div>
+    ${problem ? `<div class="err">${esc(problem)}</div>` : ""}</div>`;
+}
 function renderConns() {
-  const acc = S.settings.accounts;
+  const d = S.settings;
   $("conns").innerHTML = ["youtube", "instagram"].map((p) => {
-    const a = acc[p], info = PROVIDER_INFO[p], cb = S.settings.redirects[p];
-    const on = a.connected;
-    let body;
-    if (on) body = `<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-secondary" data-disconnect="${p}">Disconnect</button>
-        <a class="btn btn-ghost" href="${connectUrl(p, "#/settings")}">Switch account</a></div>
-        ${a.warning ? `<small style="color:var(--color-accent-700);font-weight:700">${esc(a.warning)}</small>` : ""}
-        <small>Connected ${since(a.since)}${a.expires ? ` · renews automatically (current login valid until ${since(a.expires)})` : ""}</small>`;
-    else if (a.configured) body = `<a class="btn btn-primary" href="${connectUrl(p, "#/settings")}" style="align-self:flex-start">Connect ${info.label} →</a>
-        <small>You'll approve access on ${info.label}, then come straight back here. ${info.note}</small>`;
-    else body = `<button class="btn btn-secondary" disabled style="align-self:flex-start">Not available yet</button>
-        <small>${isOwner() ? info.setup(cb) : "The server owner hasn't set up " + info.label + " sign-in yet."}</small>`;
-    return `<div class="conn ${on ? "on" : ""}"><div class="conn-head">${ICONS[p]}<div><b>${info.label}</b><span>${info.what}</span></div></div>
-      <span class="state"><i></i>${on ? `Connected · ${esc(a.name)}` : "Not connected"}</span>${body}</div>`;
-  }).join("");
+    const mine = d.accounts.filter((a) => a.platform === p), info = PROVIDER_INFO[p];
+    return `<div class="conn ${mine.length ? "on" : ""}">
+      <div class="conn-head">${ICONS[p]}<div><b>${info.label}</b><span>${info.what}</span></div></div>
+      <span class="state"><i></i>${mine.length ? `${mine.length} account${mine.length > 1 ? "s" : ""}` : "No accounts yet"}</span>
+      <div>${mine.map(acctRow).join("")}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" type="button" data-add="${p}">+ Add ${info.label} account</button>
+        ${d.oauth[p] ? `<a class="btn btn-secondary" href="${connectUrl(p, "#/settings")}">Sign in with ${p === "youtube" ? "Google" : "Instagram"}</a>` : ""}
+      </div></div>`;
+  }).join("") + (d.env && d.env.length ? `<div class="conn" style="grid-column:1/-1;flex-direction:row;align-items:center;justify-content:space-between;flex-wrap:wrap">
+      <small style="font-size:13px">The server's <code>.env</code> has ${d.env.map((p) => PROVIDER_INFO[p].label).join(" and ")} credentials. Add them to your account in one click.</small>
+      <button class="btn btn-secondary" type="button" data-import>Import from .env</button></div>` : "");
 }
 $("conns").addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-disconnect]"); if (!b) return;
-  const p = b.dataset.disconnect;
-  if (!confirm(`Disconnect ${PROVIDER_INFO[p].label}? Scheduled posts to it will fail until you connect again.`)) return;
-  try { await api(`/connect/${p}`, { method: "DELETE" }); toast(`${PROVIDER_INFO[p].label} disconnected`); openSettings(); }
-  catch (err) { toast(err.message); }
+  const t = e.target;
+  if (t.closest("[data-add]")) return openAcctDlg(t.closest("[data-add]").dataset.add);
+  if (t.closest("[data-import]")) {
+    const b = t.closest("[data-import]"); b.disabled = true; b.textContent = "Checking…";
+    try { const r = await api("/accounts/import-env", { method: "POST" });
+          toast([r.added.length ? `Added ${r.added.join(", ")}` : "", ...r.errors].filter(Boolean).join(" · ") || "Nothing new to import"); }
+    catch (err) { toast(err.message); }
+    return openSettings();
+  }
+  const row = t.closest("[data-id]"); if (!row) return;
+  const a = S.settings.accounts.find((x) => x.id === row.dataset.id);
+  if (t.closest("[data-edit-acct]")) return openAcctDlg(a.platform, a);
+  try {
+    if (t.closest("[data-check]")) { t.textContent = "Checking…"; const r = await api(`/accounts/${a.id}/check`, { method: "POST" });
+      toast(r.status === "ok" ? `${r.name} — working` : `${a.name}: ${r.last_error}`); }
+    else if (t.closest("[data-default]")) { await api(`/accounts/${a.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ default: true }) });
+      toast(`${a.name} is now your default ${PROVIDER_INFO[a.platform].label} account`); }
+    else if (t.closest("[data-remove]")) { if (!confirm(`Remove ${a.name}? Scheduled posts to it are cancelled.`)) return;
+      await api(`/accounts/${a.id}`, { method: "DELETE" }); toast(`${a.name} removed`); }
+    else return;
+  } catch (err) { toast(err.message); }
+  openSettings();
+});
+
+// ---------------------------------------------------------------- add / edit account dialog
+const ACCT_FORMS = {
+  youtube: [["label", "Label (optional)", "text", "e.g. Main channel"], ["client_id", "Client ID", "text", "1234…apps.googleusercontent.com"],
+            ["client_secret", "Client Secret", "password", "GOCSPX-…"], ["refresh_token", "Refresh token", "password", "1//0g…"]],
+  instagram: [["label", "Label (optional)", "text", "e.g. Brand account"], ["access_token", "Access token", "password", "IGAA… or EAA…"],
+              ["ig_user_id", "Instagram account ID (optional)", "text", "1784… — found automatically if empty"]],
+};
+const ACCT_HELP = {
+  youtube: `<ol><li>Google Cloud Console → <b>APIs &amp; Services → Credentials</b> → open (or create) an OAuth client of type <b>Web application</b>. Copy its <b>Client ID</b> and <b>Client Secret</b>.</li>
+    <li>On that client, add <code>https://developers.google.com/oauthplayground</code> as an authorized redirect URI and save.</li>
+    <li>Open <b>developers.google.com/oauthplayground</b> → ⚙ (top right) → tick <b>Use your own OAuth credentials</b> → paste the Client ID and Secret.</li>
+    <li>In <b>Step 1</b> type <code>https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly</code> → <b>Authorize APIs</b> → sign in with the Google account that owns the channel.</li>
+    <li><b>Step 2 → Exchange authorization code for tokens</b> → copy the <b>Refresh token</b>.</li></ol>
+    <p style="margin:8px 0 0">The Google account must be a <b>test user</b> on your OAuth consent screen while the app is in testing. Same client for several channels? Repeat steps 4–5 signed in as each channel.</p>`,
+  instagram: `<p style="margin:0 0 6px"><b>Easiest — Instagram login token (IGAA…)</b>, no Facebook Page needed (needs cloud storage on the server):</p>
+    <ol><li>developers.facebook.com → your app → <b>Instagram → API setup with Instagram login</b>.</li>
+    <li>Under <b>Generate access tokens</b> click <b>Add account</b>, log in to the Instagram account (Creator/Business), then <b>Generate token</b> and copy it.</li></ol>
+    <p style="margin:8px 0 6px"><b>Or — Facebook login token (EAA…)</b>, uploads straight from this PC:</p>
+    <ol><li>Link the Instagram account to a Facebook Page.</li>
+    <li>Graph API Explorer → your app → User token with <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>pages_show_list</code>, <code>pages_read_engagement</code> → Generate (select the Page and Instagram account).</li>
+    <li>Access Token Debugger → <b>Extend Access Token</b> → copy the 60-day token.</li></ol>`,
+};
+let ACCT = null;   // { platform, account? }
+function openAcctDlg(platform, account) {
+  ACCT = { platform, account };
+  const info = PROVIDER_INFO[platform];
+  $("acctTitle").textContent = account ? `Edit ${account.name || info.label + " account"}` : `Add ${info.label} account`;
+  $("acctIcon").innerHTML = ICONS[platform].replace(/width="44" height="44"/, 'width="34" height="34"');
+  $("acctFields").innerHTML = ACCT_FORMS[platform].map(([k, label, type, ph]) => {
+    const stored = account?.stored?.[k], val = k === "label" ? account?.label || "" : k === "client_id" ? account?.client_id || "" : k === "ig_user_id" ? account?.ext_id || "" : "";
+    const place = account && stored ? `Leave empty to keep ${stored}` : ph;
+    return `<div class="field"><label for="af_${k}">${label}</label><input class="input" id="af_${k}" data-k="${k}" type="${type}" value="${esc(val)}" placeholder="${esc(place)}" autocomplete="off" spellcheck="false"></div>`;
+  }).join("");
+  $("acctHelpBody").innerHTML = ACCT_HELP[platform];
+  $("acctHelp").open = !account;
+  $("acctErr").textContent = ""; $("acctSave").disabled = false; $("acctSave").textContent = "Save & check";
+  $("acctDlg").classList.remove("hidden");
+  setTimeout(() => $$("#acctFields input")[account ? 0 : 1]?.focus(), 30);
+}
+function closeAcctDlg() { $("acctDlg").classList.add("hidden"); ACCT = null; }
+$("acctClose").onclick = closeAcctDlg; $("acctCancel").onclick = closeAcctDlg;
+$("acctDlg").addEventListener("click", (e) => { if (e.target === $("acctDlg")) closeAcctDlg(); });
+addEventListener("keydown", (e) => { if (e.key === "Escape" && ACCT) closeAcctDlg(); });
+$("acctForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = { platform: ACCT.platform };
+  $$("#acctFields input").forEach((i) => { const v = i.value.trim(); if (v || i.dataset.k === "label" || (ACCT.account && i.dataset.k === "ig_user_id")) body[i.dataset.k] = v; });
+  $("acctErr").textContent = ""; $("acctSave").disabled = true;
+  $("acctSave").textContent = `Checking with ${PROVIDER_INFO[ACCT.platform].label}…`;
+  try {
+    const r = ACCT.account
+      ? await api(`/accounts/${ACCT.account.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      : await api("/accounts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    toast(`${r.name} ${ACCT.account ? "updated" : "added"} — login works`);
+    closeAcctDlg(); openSettings();
+  } catch (err) { $("acctErr").textContent = err.message; $("acctSave").disabled = false; $("acctSave").textContent = "Save & check"; }
 });
 $("pfSave").onclick = async () => {
   $("pfErr").textContent = "";
