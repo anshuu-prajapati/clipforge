@@ -53,13 +53,51 @@ ROOT.mkdir(parents=True, exist_ok=True)
 STATIC = Path(__file__).parent / "static"
 GPU = threading.Lock()          # one pipeline at a time: whisper + ffmpeg already use the whole machine
 LIST_FIELDS = {"manifest": 0, "social": 0, "publish": 0, "input": 0}
-app = FastAPI(title="clipforge")
+MAX_UPLOAD_MB = int(os.environ.get("CLIPFORGE_MAX_UPLOAD_MB", "4096"))
+app = FastAPI(title="clipforge", docs_url=None, redoc_url=None, openapi_url=None)   # no public API explorer
+
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+       "font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com; "
+       "media-src 'self' blob: https://res.cloudinary.com; connect-src 'self'; frame-ancestors 'none'; "
+       "base-uri 'self'; object-src 'none'; form-action 'self'")
+
+
+def _origin(url: str) -> str:
+    m = re.match(r"^(https?://[^/]+)", url.strip())
+    return m[1].lower() if m else ""
+
+
+@app.middleware("http")
+async def security(request: Request, call_next):
+    """Same-origin check for state-changing requests (CSRF) + browser security headers."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        origin = request.headers.get("origin")
+        allowed = {_origin(str(request.base_url)), _origin(os.environ.get("PUBLIC_URL", ""))} - {""}
+        if origin and origin.lower() not in allowed:
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Request blocked: it came from another website."}, status_code=403)
+    response = await call_next(request)
+    h = response.headers
+    h.setdefault("Content-Security-Policy", CSP)
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.scheme == "https" or os.environ.get("PUBLIC_URL", "").startswith("https://"):
+        h.setdefault("Strict-Transport-Security", "max-age=31536000")
+    if request.url.path.startswith(("/auth/", "/settings", "/accounts")):
+        h.setdefault("Cache-Control", "no-store")
+    return response
 
 
 # =========================================================================== auth
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
 def current_user(request: Request) -> dict:
     try:
-        user = auth.user_for(request.cookies.get(auth.COOKIE))
+        user = auth.user_for(request.cookies.get(auth.COOKIE), _ip(request))
     except DatabaseError as e:
         raise HTTPException(503, str(e))
     if not user:
@@ -75,14 +113,16 @@ class Credentials(BaseModel):
     password: str
     name: str = ""
     code: str = ""
+    remember: bool = True
 
 
 def _https(request: Request) -> bool:
     return request.url.scheme == "https" or os.environ.get("PUBLIC_URL", "").startswith("https://")
 
 
-def _login_response(user: dict, request: Request, response: Response) -> dict:
-    response.set_cookie(auth.COOKIE, auth.new_session(user["_id"]), max_age=auth.SESSION_DAYS * 86400,
+def _login_response(user: dict, request: Request, response: Response, remember: bool = True) -> dict:
+    token = auth.new_session(user["_id"], remember, _ip(request), request.headers.get("user-agent", ""))
+    response.set_cookie(auth.COOKIE, token, max_age=auth.SESSION_DAYS * 86400 if remember else None,
                         httponly=True, samesite="lax", path="/", secure=_https(request))
     return auth.safe_user(user)
 
@@ -104,17 +144,17 @@ def signup(c: Credentials, request: Request, response: Response):
         raise HTTPException(400, str(e))
     if user["role"] == "owner":
         _claim_local_projects(user["_id"])
-    return _login_response(user, request, response)
+    return _login_response(user, request, response, c.remember)
 
 
 @app.post("/auth/login")
 def login(c: Credentials, request: Request, response: Response):
     try:
-        user = auth.login(c.email, c.password)
+        user = auth.login(c.email, c.password, _ip(request))
     except auth.AuthError as e:
         time.sleep(0.4)                           # slow down password guessing a little
-        raise HTTPException(400, str(e))
-    return _login_response(user, request, response)
+        raise HTTPException(429 if "Too many" in str(e) else 400, str(e))
+    return _login_response(user, request, response, c.remember)
 
 
 @app.post("/auth/logout")
@@ -147,6 +187,96 @@ def _claim_local_projects(user_id: str) -> None:
     legacy_brand = ROOT / "brand.json"
     if legacy_brand.exists():
         db().users.update_one({"_id": user_id}, {"$set": {"brand": BrandTemplate.load(legacy_brand).to_dict()}})
+
+
+# =========================================================================== input validation
+_ENUMS = {("layout", "aspect"): {"9:16", "1:1", "16:9"}, ("layout", "framing"): {"fit", "fill"},
+          ("captions", "size"): {"s", "m", "l"}, ("captions", "background"): {"none", "shadow", "box"},
+          ("captions", "animation"): {"none", "word", "karaoke", "pop"}, ("headline", "position"): {"top", "bottom"},
+          ("headline", "style"): {"bold", "card", "band", "plain"},
+          ("logo", "position"): {"top-left", "top-right", "bottom-left", "bottom-right"}}
+_PATHS = {("logo", "path"), ("music", "path"), ("intro_outro", "intro_path"), ("intro_outro", "outro_path")}
+
+
+def _check_values(obj, default, section: str = "") -> None:
+    """Every template value has the type of its default — template values end up inside ffmpeg
+    filter strings, so a crafted "colour" or "number" must never get through."""
+    import math
+    from dataclasses import fields, is_dataclass
+    for f in fields(obj):
+        v, d, key = getattr(obj, f.name), getattr(default, f.name), (section, f.name)
+        if is_dataclass(d):
+            if not is_dataclass(v):
+                raise ValueError(f"{f.name} must be an object")
+            _check_values(v, d, f.name)
+        elif key in _ENUMS:
+            if v not in _ENUMS[key]:
+                raise ValueError(f"{section}.{f.name} must be one of {sorted(_ENUMS[key])}")
+        elif f.name.endswith("color"):
+            if not (isinstance(v, str) and re.fullmatch(r"#[0-9A-Fa-f]{6}", v)):
+                raise ValueError(f"{section}.{f.name} must be a colour like #FFD60A")
+        elif isinstance(d, bool):
+            if not isinstance(v, bool):
+                raise ValueError(f"{section}.{f.name} must be true or false")
+        elif isinstance(d, (int, float)):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 10000:
+                raise ValueError(f"{section}.{f.name} must be a number")
+        elif key in _PATHS or f.name == "fonts_dir":
+            if v is not None and not isinstance(v, str):
+                raise ValueError(f"{f.name} must be a file path")
+        elif isinstance(d, str):
+            if not isinstance(v, str) or len(v) > 80 or re.search(r"[\x00-\x1f{}\\;,]", v):
+                raise ValueError(f"{section}.{f.name} contains characters that aren't allowed")
+
+
+def _safe_template(data: Optional[dict], user: dict, strict: bool = True) -> BrandTemplate:
+    """Validated template whose files (logo, music, intro, outro) are the user's own uploads."""
+    if not data:
+        return BrandTemplate()
+    try:
+        tpl = BrandTemplate.from_dict(data)
+        _check_values(tpl, BrandTemplate())
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Invalid style: {e}")
+    mine = (BRAND_ASSETS / user["_id"]).resolve()
+    for section, attr in _PATHS:
+        obj = getattr(tpl, section)
+        p = getattr(obj, attr)
+        if p and not (mine in Path(p).resolve().parents and Path(p).is_file()):
+            if strict:
+                raise HTTPException(400, "Logo, music, intro and outro must be files you uploaded in Brand style.")
+            setattr(obj, attr, None)              # e.g. a style imported from before accounts existed
+    if tpl.fonts_dir:
+        if strict:
+            raise HTTPException(400, "Custom font folders can't be set from the dashboard.")
+        tpl.fonts_dir = None
+    return tpl
+
+
+def _resolve(host: str) -> list[str]:
+    import socket
+    return [i[4][0] for i in socket.getaddrinfo(host, None)]
+
+
+def _check_link(url: str) -> str:
+    """Only public web links: no local files, no localhost / private-network targets (SSRF)."""
+    import ipaddress
+    from urllib.parse import urlparse
+    url = url.strip()
+    if not re.match(r"^https?://", url, re.I) or len(url) > 2048:
+        raise HTTPException(400, "Paste a web link that starts with https://")
+    host = urlparse(url).hostname
+    if not host:
+        raise HTTPException(400, "That link has no website in it.")
+    try:
+        addrs = _resolve(host)
+    except OSError:
+        raise HTTPException(400, "That link's website can't be found.")
+    for a in addrs:
+        ip = ipaddress.ip_address(a.split("%")[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise HTTPException(400, "Links to private or local network addresses aren't allowed.")
+    return url
 
 
 # =========================================================================== jobs
@@ -195,7 +325,8 @@ def _cloud_sync(job_id: str, user_id: str, m: dict, clip_ids: Optional[set] = No
             thumb = d / c.get("thumbnail", "")
             t = storage.upload(thumb, folder, "image") if c.get("thumbnail") and thumb.exists() else None
             c["cloud"] = {"video": v["url"], "thumb": t and t["url"], "public_id": v["public_id"],
-                          "bytes": v["bytes"], "version": v["version"]}
+                          "bytes": v["bytes"], "version": v["version"], "type": v.get("type", "upload"),
+                          "format": v.get("format", "mp4")}
             c.pop("cloud_error", None)
         except Exception as e:  # noqa: BLE001 - the clip is still usable locally
             c["cloud_error"] = str(e)[:300]
@@ -251,20 +382,34 @@ def dashboard():
 
 
 @app.post("/jobs")
-async def create_job(user: User, file: Optional[UploadFile] = File(None), url: Optional[str] = Form(None),
-                     length: str = Form("auto"), max_clips: int = Form(6), template: Optional[str] = Form(None)):
+async def create_job(request: Request, user: User, file: Optional[UploadFile] = File(None),
+                     url: Optional[str] = Form(None), length: str = Form("auto"), max_clips: int = Form(6),
+                     template: Optional[str] = Form(None)):
     if not file and not url:
         raise HTTPException(400, "Send a file or a url")
+    if int(request.headers.get("content-length") or 0) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"That file is larger than {MAX_UPLOAD_MB} MB.")
     try:
         parse_length(length)
     except ClipforgeError as e:
         raise HTTPException(400, str(e))
+    if not 1 <= max_clips <= 20:
+        raise HTTPException(400, "max_clips must be between 1 and 20")
+    if url and not file:
+        url = _check_link(url)                    # never a local path or an internal address
+    try:
+        tpl = _safe_template(json.loads(template), user) if template else _safe_template(user.get("brand"), user, strict=False)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid style JSON.")
     job_id = uuid.uuid4().hex[:12]
     d = ROOT / job_id
     d.mkdir(parents=True)
     source = url
     if file:
-        dst = d / f"upload{Path(file.filename or 'video.mp4').suffix}"
+        ext = Path(file.filename or "video.mp4").suffix.lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,6}", ext):
+            ext = ".mp4"
+        dst = d / f"upload{ext}"
         with dst.open("wb") as f:
             shutil.copyfileobj(file.file, f)
         source = str(dst)
@@ -272,8 +417,7 @@ async def create_job(user: User, file: Optional[UploadFile] = File(None), url: O
     job = {"_id": job_id, "user_id": user["_id"], "state": "queued", "steps": {}, "current": None,
            "source": url or (file.filename if file else ""), "title": (file.filename if file else url),
            "origin": origin, "length": length, "max_clips": max_clips, "created": time.time(),
-           "input": {"source": source, "length": length, "max_clips": max_clips,
-                     "template": json.loads(template) if template else _brand(user).to_dict()}}
+           "input": {"source": source, "length": length, "max_clips": max_clips, "template": tpl.to_dict()}}
     db().jobs.insert_one(job)
     _start(job_id)
     return public(job, ("input",))
@@ -359,6 +503,22 @@ def get_file(job_id: str, name: str, request: Request, user: User, download: boo
                              media_type=mimetypes.guess_type(p.name)[0] or "application/octet-stream")
 
 
+@app.get("/jobs/{job_id}/clips/{clip_id}/download")
+def download_clip(job_id: str, clip_id: str, user: User):
+    """Owner-only download: a short hop to a signed Cloudinary link, or the file from this PC."""
+    _job(job_id, user, {"_id": 1})
+    _, c = _clip(job_id, clip_id)
+    cloud = c.get("cloud") or {}
+    if cloud.get("public_id") and storage.enabled():
+        url = storage.signed_url(cloud["public_id"], "video", cloud.get("version"), cloud.get("format", "mp4"),
+                                 download=True, delivery=cloud.get("type", "upload"))
+        return RedirectResponse(url, status_code=302)
+    p = ROOT / job_id / c["file"]
+    if not p.exists():
+        raise HTTPException(404, "The file isn't on this server any more.")
+    return FileResponse(p, filename=f"{clip_id}.mp4")
+
+
 @app.get("/jobs/{job_id}/zip")
 def zip_clips(job_id: str, ids: str, user: User):
     _job(job_id, user, {"_id": 1})
@@ -385,7 +545,9 @@ class Edit(BaseModel):
 @app.post("/jobs/{job_id}/clips/{clip_id}")
 def edit_clip(job_id: str, clip_id: str, edit: Edit, user: User):
     _job(job_id, user, {"_id": 1})
-    tpl = BrandTemplate.from_dict(edit.template) if edit.template else None
+    tpl = _safe_template(edit.template, user) if edit.template else None
+    if edit.trim and not (0 <= edit.trim[0] < edit.trim[1] and edit.trim[1] - edit.trim[0] <= 600):
+        raise HTTPException(400, "Trim must be a start before the end, at most 10 minutes long.")
     with GPU:
         try:
             rerender(ROOT / job_id, clip_id, hook=edit.hook, trim=edit.trim, lines=edit.lines, tpl=tpl)
@@ -408,7 +570,7 @@ _FONT_FILES = {"Arial Black": "ariblk.ttf", "Impact": "impact.ttf", "Segoe UI Bl
 
 def _brand(user: dict) -> BrandTemplate:
     """The user's saved brand style; their new videos are rendered with it."""
-    return BrandTemplate.from_dict(user["brand"]) if user.get("brand") else BrandTemplate()
+    return _safe_template(user.get("brand"), user, strict=False)
 
 
 def _fonts() -> list[str]:
@@ -427,11 +589,7 @@ def get_brand(user: User):
 
 @app.put("/brand")
 def put_brand(template: dict, user: User):
-    try:
-        tpl = BrandTemplate.from_dict(template)
-        tpl.size                                  # validates aspect
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"Invalid template: {e}")
+    tpl = _safe_template(template, user)
     db().users.update_one({"_id": user["_id"]}, {"$set": {"brand": tpl.to_dict()}})
     return {"template": tpl.to_dict()}
 
@@ -447,8 +605,8 @@ class PreviewReq(BaseModel):
 def brand_preview(req: PreviewReq, user: User):
     """One frame rendered with the real caption/hook renderer — what the clip will look like."""
     from .render import render_preview
-    tpl = BrandTemplate.from_dict(req.template)
-    src, start, lines, emph, hook = None, 0.0, None, [], req.hook
+    tpl = _safe_template(req.template, user)
+    src, start, lines, emph, hook = None, 0.0, None, [], (req.hook or "")[:200] if req.hook is not None else None
     if req.job and req.clip:
         try:
             _job(req.job, user, {"_id": 1})
@@ -475,6 +633,9 @@ async def brand_asset(user: User, file: UploadFile = File(...)):
     folder = BRAND_ASSETS / user["_id"]
     folder.mkdir(parents=True, exist_ok=True)
     name = re.sub(r"[^\w.-]", "_", Path(file.filename or "asset").name)[-80:]
+    if Path(name).suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+                                         ".mp4", ".mov", ".webm", ".mkv"}:
+        raise HTTPException(400, "Upload an image (PNG/JPG/WebP), audio (MP3/WAV/M4A) or video (MP4/MOV/WebM).")
     dst = folder / f"{uuid.uuid4().hex[:6]}_{name}"
     with dst.open("wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -906,11 +1067,24 @@ class PasswordReq(BaseModel):
 def change_password(req: PasswordReq, request: Request, user: User):
     if not auth.check_password(req.current, user["password"]):
         raise HTTPException(400, "Your current password isn't right.")
-    if len(req.new) < 8:
-        raise HTTPException(400, "Use a new password with at least 8 characters.")
+    if problem := auth.password_problem(req.new, user["email"]):
+        raise HTTPException(400, problem)
     db().users.update_one({"_id": user["_id"]}, {"$set": {"password": auth.hash_password(req.new)}})
     keep = auth._token_hash(request.cookies.get(auth.COOKIE, ""))   # other devices are logged out
     db().sessions.delete_many({"user_id": user["_id"], "token": {"$ne": keep}})
+    return {"ok": True}
+
+
+@app.get("/settings/sessions")
+def list_sessions(request: Request, user: User):
+    """Where this account is logged in (device, IP, last activity)."""
+    return auth.sessions_of(user["_id"], request.cookies.get(auth.COOKIE))
+
+
+@app.delete("/settings/sessions/{sid}")
+def end_one_session(sid: str, user: User):
+    if not auth.end_session_id(user["_id"], sid):
+        raise HTTPException(404, "That session already ended.")
     return {"ok": True}
 
 

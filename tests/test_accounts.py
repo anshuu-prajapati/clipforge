@@ -1,32 +1,11 @@
 """Accounts, per-user isolation and owner-only publishing — against an in-memory MongoDB."""
 import json
 
-import mongomock
 import pytest
 from fastapi.testclient import TestClient
 
-from clipforge import auth, db as dbmod, server
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    mem = mongomock.MongoClient().clipforge
-    monkeypatch.setattr(dbmod, "db", lambda: mem)
-    monkeypatch.setattr(auth, "db", lambda: mem)
-    monkeypatch.setattr(server, "db", lambda: mem)
-    monkeypatch.setattr(server, "ROOT", tmp_path)
-    monkeypatch.setattr(server, "_start", lambda job_id: None)        # don't run the real pipeline
-    monkeypatch.delenv("CLIPFORGE_SIGNUP_CODE", raising=False)
-    monkeypatch.delenv("CLIPFORGE_SIGNUP", raising=False)
-    from cryptography.fernet import Fernet
-    monkeypatch.setenv("CLIPFORGE_SECRET_KEY", Fernet.generate_key().decode())   # never touch the real .env
-    c = TestClient(server.app)
-    c.mem = mem
-    return c
-
-
-def signup(c, email, pw="password123", **kw):
-    return c.post("/auth/signup", json={"email": email, "password": pw, **kw})
+from clipforge import auth, server
+from conftest import PASSWORD, signup
 
 
 def test_password_hash_roundtrip():
@@ -42,13 +21,13 @@ def test_signup_login_logout_and_roles(client):
     assert r.status_code == 200 and r.json()["role"] == "owner" and r.json()["email"] == "owner@example.com"
     assert client.get("/auth/me").json()["name"] == "Anshu"
     stored = client.mem.users.find_one({"email": "owner@example.com"})
-    assert stored["password"].startswith("scrypt$") and "password123" not in json.dumps(stored, default=str)
+    assert stored["password"].startswith("scrypt$") and PASSWORD not in json.dumps(stored, default=str)
     session = client.mem.sessions.find_one({})
     assert session["token"] != client.cookies.get(auth.COOKIE)            # only the hash is stored
     client.post("/auth/logout")
     assert client.get("/auth/me").status_code == 401
     assert client.post("/auth/login", json={"email": "owner@example.com", "password": "nope-nope"}).status_code == 400
-    assert client.post("/auth/login", json={"email": "OWNER@example.com", "password": "password123"}).status_code == 200
+    assert client.post("/auth/login", json={"email": "OWNER@example.com", "password": PASSWORD}).status_code == 200
     other = TestClient(server.app)
     assert signup(other, "member@example.com").json()["role"] == "member"
     assert signup(other, "member@example.com").status_code == 400          # duplicate
@@ -227,14 +206,14 @@ def test_settings_profile_password_sessions_and_delete(client):
     assert client.patch("/settings/profile", json={"email": "taken@example.com"}).status_code == 400
     assert client.patch("/settings/profile", json={"email": "me@example.com"}).json()["email"] == "me@example.com"
     other_device = TestClient(server.app)
-    other_device.post("/auth/login", json={"email": "me@example.com", "password": "password123"})
+    other_device.post("/auth/login", json={"email": "me@example.com", "password": PASSWORD})
     assert client.post("/settings/password", json={"current": "wrong-one", "new": "newpassword1"}).status_code == 400
-    assert client.post("/settings/password", json={"current": "password123", "new": "newpassword1"}).status_code == 200
+    assert client.post("/settings/password", json={"current": PASSWORD, "new": "newpassword1"}).status_code == 200
     assert other_device.get("/auth/me").status_code == 401     # other sessions ended
     assert client.get("/auth/me").status_code == 200            # this one kept
     job = client.post("/jobs", data={"url": "https://youtu.be/abc123xyz"}).json()
     client.mem.jobs.update_one({"_id": job["id"]}, {"$set": {"state": "done"}})
-    assert client.post("/settings/delete-account", json={"password": "password123"}).status_code == 400
+    assert client.post("/settings/delete-account", json={"password": PASSWORD}).status_code == 400
     assert client.post("/settings/delete-account", json={"password": "newpassword1"}).status_code == 200
     assert client.mem.users.find_one({"email": "me@example.com"}) is None
     assert client.mem.jobs.count_documents({"_id": job["id"]}) == 0

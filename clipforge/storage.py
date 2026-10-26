@@ -28,26 +28,47 @@ def _configured() -> None:
 
 
 def upload(path: Path, folder: str, kind: str) -> dict:
-    """Upload (or overwrite) one file; kind = 'video' or 'image'. Returns {url, public_id, version, bytes}."""
+    """Upload (or overwrite) one file privately; kind = 'video' or 'image'.
+
+    Files use Cloudinary's "authenticated" delivery type: they can only be fetched through URLs
+    signed with the API secret, which the server hands out to the owning user (and to Instagram
+    when publishing). Returns {url (signed), public_id, version, bytes, type}."""
     import cloudinary.uploader
     _configured()
     public_id = f"{folder}/{path.stem}"
-    opts = dict(public_id=public_id, resource_type=kind, overwrite=True, invalidate=True, unique_filename=False)
+    opts = dict(public_id=public_id, resource_type=kind, type="authenticated", overwrite=True, invalidate=True,
+                unique_filename=False)
     if kind == "video":
         r = cloudinary.uploader.upload_large(str(path), chunk_size=20 * 1024 * 1024, **opts)
     else:
         r = cloudinary.uploader.upload(str(path), **opts)
-    return {"url": r["secure_url"], "public_id": r["public_id"], "version": r.get("version"), "bytes": r.get("bytes")}
+    fmt = r.get("format") or path.suffix.lstrip(".")
+    return {"url": signed_url(r["public_id"], kind, r.get("version"), fmt), "public_id": r["public_id"],
+            "version": r.get("version"), "bytes": r.get("bytes"), "type": "authenticated", "format": fmt}
+
+
+def signed_url(public_id: str, kind: str, version=None, fmt: str = "", download: bool = False,
+               delivery: str = "authenticated") -> str:
+    """Signed delivery URL for a private file (download=True → browser saves it instead of playing)."""
+    from cloudinary.utils import cloudinary_url
+    _configured()
+    opts = dict(resource_type=kind, type=delivery, sign_url=delivery == "authenticated", secure=True, format=fmt or None)
+    if version:
+        opts["version"] = version
+    if download:
+        opts["flags"] = "attachment"
+    return cloudinary_url(public_id, **opts)[0]
 
 
 def delete_folder(folder: str) -> None:
     import cloudinary.api
     _configured()
     for kind in ("video", "image"):
-        try:
-            cloudinary.api.delete_resources_by_prefix(folder + "/", resource_type=kind)
-        except Exception:  # noqa: BLE001 - nothing stored of that kind
-            pass
+        for delivery in ("authenticated", "upload"):       # private files, and public ones from older versions
+            try:
+                cloudinary.api.delete_resources_by_prefix(folder + "/", resource_type=kind, type=delivery)
+            except Exception:  # noqa: BLE001 - nothing stored of that kind
+                pass
 
 
 def check() -> str:

@@ -298,6 +298,7 @@
       <div class="field"><label for="aEmail">Email</label><input class="input" id="aEmail" type="email" autocomplete="email"></div>
       <div class="field"><label for="aPass">Password</label><input class="input" id="aPass" type="password" autocomplete="current-password"></div>
       <div class="field hidden" id="fCode"><label for="aCode">Invite code</label><input class="input" id="aCode" autocomplete="off"></div>
+      <label class="check"><input type="checkbox" id="aRemember" checked>Keep me logged in for 30 days</label>
       <div class="err" id="aErr" role="alert"></div>
       <button class="btn btn-primary btn-block" id="aGo" type="submit" style="padding:14px 16px;font-size:15px">Log in →</button>
       <span style="font-size:12px;color:var(--color-neutral-700)" id="aNote"></span>
@@ -439,8 +440,9 @@
       <span style="font-size:12px;color:var(--color-neutral-700)">Changing it logs you out on every other device.</span>
     </div>
     <div class="setcard">
-      <h4>Sessions</h4>
-      <p>Lost a laptop or used a shared computer? End every other login to your account.</p>
+      <h4>Where you're logged in</h4>
+      <p>Don't recognise a device? Log it out, then change your password.</p>
+      <div id="sessList"></div>
       <button class="btn btn-secondary" id="logoutAll" style="align-self:flex-start">Log out of all other devices</button>
     </div>
     <div class="setcard danger">
@@ -1246,9 +1248,8 @@ $("expRun").onclick = async () => {
     S.M.template = templateFor();
     setP(100, "Starting download");
     const a = document.createElement("a");
-    const one = ids.length === 1 && S.M.clips.find((c) => c.id === ids[0]);
-    a.href = one ? (one.cloud?.video ? one.cloud.video.replace("/upload/", "/upload/fl_attachment/") : `/jobs/${S.jobId}/files/${ids[0]}.mp4?download=1&v=${Date.now()}`)
-                 : `/jobs/${S.jobId}/zip?ids=${ids.join(",")}`;
+    a.href = ids.length === 1 ? `/jobs/${S.jobId}/clips/${ids[0]}/download?v=${Date.now()}`   // owner-checked, signed cloud link
+                              : `/jobs/${S.jobId}/zip?ids=${ids.join(",")}`;
     document.body.append(a); a.click(); a.remove();
     $("expDoneText").textContent = ids.length === 1 ? `${ids[0]}.mp4 downloaded` : `${ids.length} clips downloaded as clipforge_clips.zip`;
     phase("done");
@@ -1602,11 +1603,39 @@ async function openSettings() {
   $("pfName").value = u.name; $("pfEmail").value = u.email;
   ["pfErr", "pwErr", "delErr"].forEach((id) => ($(id).textContent = ""));
   renderConns();
+  loadSessions();
 }
+function deviceName(ua = "") {
+  const b = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
+  const o = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iPhone / iPad" : /Mac OS/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "";
+  return o ? `${b} on ${o}` : b;
+}
+function ago(ts) {
+  const s = Date.now() / 1000 - ts;
+  return s < 120 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
+}
+async function loadSessions() {
+  let list = [];
+  try { list = await api("/settings/sessions"); } catch {}
+  $("sessList").innerHTML = list.map((s) => `<div class="arow" data-sid="${s.id}"><i class="dot"></i>
+    <div style="min-width:0"><b>${esc(deviceName(s.agent))} ${s.current ? '<span class="tag tag-accent">This device</span>' : ""}</b>
+      <div class="meta"><span class="mono">${esc(s.ip || "")}</span><span>active ${ago(s.last_seen)}</span>
+        <span>${s.remember ? "remembered for 30 days" : "ends after 12 h idle"}</span></div></div>
+    <div class="acts">${s.current ? "" : '<button type="button" data-end>Log out</button>'}</div></div>`).join("");
+}
+$("sessList").addEventListener("click", async (e) => {
+  const row = e.target.closest("[data-sid]"); if (!row || !e.target.closest("[data-end]")) return;
+  try { await api(`/settings/sessions/${row.dataset.sid}`, { method: "DELETE" }); toast("That device was logged out"); }
+  catch (err) { toast(err.message); }
+  loadSessions();
+});
 function acctRow(a) {
   const tags = [a.default ? `<span class="tag tag-accent">Default</span>` : "",
                 a.label ? `<span class="tag tag-neutral">${esc(a.label)}</span>` : "",
                 `<span>${a.method === "oauth" ? "signed in" : "added by hand"}${a.kind === "facebook_login" ? " · Facebook login" : a.kind === "instagram_login" ? " · Instagram login" : ""}</span>`,
+                a.platform === "youtube" ? `<span>stays connected</span>`
+                  : a.kind === "instagram_login" ? `<span>renews automatically${a.expires ? " · valid to " + since(a.expires) : ""}</span>`
+                  : `<span title="Facebook-login tokens last about 60 days">update the token every ~60 days</span>`,
                 a.client_id ? `<span class="mono" title="Client ID">${esc(a.client_id.slice(0, 14))}…</span>` : "",
                 ...Object.entries(a.stored || {}).map(([k, v]) => `<span class="mono" title="${k.replace("_", " ")}">${esc(v)}</span>`)].join("");
   const problem = a.warning || (a.status === "error" ? a.last_error : a.last_error);
@@ -1734,6 +1763,7 @@ $("pwSave").onclick = async () => {
 $("logoutAll").onclick = async () => {
   try { const r = await api("/settings/logout-all", { method: "POST" }); toast(r.ended ? `Logged out of ${r.ended} other device${r.ended > 1 ? "s" : ""}` : "No other devices were logged in"); }
   catch (err) { toast(err.message); }
+  loadSessions();
 };
 $("delAcct").onclick = async () => {
   $("delErr").textContent = "";
@@ -1779,7 +1809,8 @@ $("authTabs").addEventListener("change", (e) => setAuthMode(e.target.value));
 $("authForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   $("aErr").textContent = ""; $("aGo").disabled = true;
-  const body = { email: $("aEmail").value, password: $("aPass").value, name: $("aName").value, code: $("aCode").value };
+  const body = { email: $("aEmail").value, password: $("aPass").value, name: $("aName").value, code: $("aCode").value,
+                 remember: $("aRemember").checked };
   try {
     S.user = await api(`/auth/${AUTH.mode === "signup" ? "signup" : "login"}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     AUTH.config.first_user = false; $("aPass").value = "";
