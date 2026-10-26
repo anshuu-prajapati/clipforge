@@ -185,3 +185,13 @@ def test_first_user_claims_local_projects(client, tmp_path):
     jobs = client.get("/jobs").json()
     assert [j["title"] for j in jobs] == ["Old"]
     assert client.get("/jobs/oldjob123456/clips").json()["duration"] == 60
+
+
+def test_public_url_drives_redirects_and_secure_cookie(client, monkeypatch):
+    monkeypatch.setenv("PUBLIC_URL", "https://clips.example.com/")
+    client = TestClient(server.app, base_url="https://testserver")   # secure cookies only travel over https
+    r = signup(client, "owner@example.com")
+    assert "secure" in r.headers["set-cookie"].lower()
+    red = client.get("/settings").json()["redirects"]
+    assert red == {"youtube": "https://clips.example.com/connect/youtube/callback",
+                   "instagram": "https://clips.example.com/connect/instagram/callback"}

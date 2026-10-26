@@ -77,9 +77,13 @@ class Credentials(BaseModel):
     code: str = ""
 
 
-def _login_response(user: dict, response: Response) -> dict:
+def _https(request: Request) -> bool:
+    return request.url.scheme == "https" or os.environ.get("PUBLIC_URL", "").startswith("https://")
+
+
+def _login_response(user: dict, request: Request, response: Response) -> dict:
     response.set_cookie(auth.COOKIE, auth.new_session(user["_id"]), max_age=auth.SESSION_DAYS * 86400,
-                        httponly=True, samesite="lax", path="/")
+                        httponly=True, samesite="lax", path="/", secure=_https(request))
     return auth.safe_user(user)
 
 
@@ -93,24 +97,24 @@ def auth_config():
 
 
 @app.post("/auth/signup")
-def signup(c: Credentials, response: Response):
+def signup(c: Credentials, request: Request, response: Response):
     try:
         user = auth.create_user(c.email, c.password, c.name, c.code)
     except auth.AuthError as e:
         raise HTTPException(400, str(e))
     if user["role"] == "owner":
         _claim_local_projects(user["_id"])
-    return _login_response(user, response)
+    return _login_response(user, request, response)
 
 
 @app.post("/auth/login")
-def login(c: Credentials, response: Response):
+def login(c: Credentials, request: Request, response: Response):
     try:
         user = auth.login(c.email, c.password)
     except auth.AuthError as e:
         time.sleep(0.4)                           # slow down password guessing a little
         raise HTTPException(400, str(e))
-    return _login_response(user, response)
+    return _login_response(user, request, response)
 
 
 @app.post("/auth/logout")
@@ -717,10 +721,11 @@ def disconnect(provider: str, user: User):
 
 # =========================================================================== settings: profile & account
 @app.get("/settings")
-def get_settings(user: User):
+def get_settings(request: Request, user: User):
     return {"profile": {**auth.safe_user(user), "created": user.get("created")}, "accounts": _accounts(user),
             "storage": "cloudinary" if storage.enabled() else "local",
-            "redirects": {p: f"/connect/{p}/callback" for p in PROVIDERS}}
+            "public_url": os.environ.get("PUBLIC_URL") or None,
+            "redirects": {p: _redirect_uri(request, p) for p in PROVIDERS}}
 
 
 class ProfileReq(BaseModel):

@@ -1578,7 +1578,7 @@ async function openSettings() {
 function renderConns() {
   const acc = S.settings.accounts;
   $("conns").innerHTML = ["youtube", "instagram"].map((p) => {
-    const a = acc[p], info = PROVIDER_INFO[p], cb = location.origin + S.settings.redirects[p];
+    const a = acc[p], info = PROVIDER_INFO[p], cb = S.settings.redirects[p];
     const on = a.connected;
     let body;
     if (on) body = `<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-secondary" data-disconnect="${p}">Disconnect</button>
