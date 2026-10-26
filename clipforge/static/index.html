@@ -231,6 +231,26 @@
   .userchip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px 6px 6px; border: 2px solid var(--color-text); background: var(--color-bg); cursor: pointer; font: 700 13px var(--font-body); }
   .userchip i { width: 26px; height: 26px; display: grid; place-items: center; background: var(--color-accent); color: #fff; font-style: normal; font-weight: 800; font-size: 12px; }
   .umenu { position: fixed; z-index: 40; top: 64px; right: 24px; width: 260px; background: var(--color-bg); border: 2px solid var(--color-text); box-shadow: 6px 6px 0 var(--color-text); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .setgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 24px; }
+  .setcard { border: 2px solid var(--color-text); background: var(--color-bg); padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+  .setcard.wide { grid-column: 1 / -1; }
+  .setcard h4 { margin: 0; font-size: 20px; }
+  .setcard > p { margin: -6px 0 0; font-size: 14px; color: var(--color-neutral-700); }
+  .conns { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px; }
+  .conn { border: 2px solid var(--color-text); padding: 18px; display: flex; flex-direction: column; gap: 12px; transition: box-shadow .15s, transform .15s; }
+  .conn.on { box-shadow: 6px 6px 0 var(--color-accent); }
+  .conn-head { display: flex; align-items: center; gap: 12px; }
+  .conn-head svg { flex: none; }
+  .conn-head b { font-size: 17px; display: block; }
+  .conn-head span { font-size: 13px; color: var(--color-neutral-700); }
+  .conn .state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+  .conn .state i { width: 9px; height: 9px; background: var(--color-neutral-400); }
+  .conn.on .state i { background: #16a34a; }
+  .conn small { font-size: 12px; color: var(--color-neutral-700); line-height: 1.45; }
+  .conn code { font: 600 11px var(--mono); background: var(--color-neutral-200); padding: 2px 5px; overflow-wrap: anywhere; }
+  .danger { border-color: var(--color-accent-700); }
+  .danger h4 { color: var(--color-accent-700); }
+  .avatar { width: 64px; height: 64px; display: grid; place-items: center; background: var(--color-accent); color: #fff; font-size: 24px; font-weight: 800; flex: none; box-shadow: 4px 4px 0 var(--color-text); }
   .proj .del { opacity: 0; border: 0; background: none; cursor: pointer; font-size: 18px; color: var(--color-neutral-600); padding: 0 4px; }
   .proj:hover .del { opacity: 1; } .proj .del:hover { color: var(--color-accent-700); }
   .toast.show { opacity: 1; }
@@ -284,6 +304,7 @@
       <a href="#how" data-scroll="how">How it works</a>
       <a href="#projects" data-scroll="projects" id="navProjects" class="hidden">Projects</a>
       <a href="#/brand">Brand style</a>
+      <a href="#/settings">Settings</a>
     </span>
     <button class="btn btn-primary" data-focus-url>New video</button>
     <button class="userchip" data-user type="button"></button>
@@ -370,9 +391,57 @@
   <div class="stepper" id="stepper" style="display:flex;margin-right:auto;flex-wrap:wrap"></div>
   <a class="navlink" href="#/" id="navProj">Projects</a>
   <a class="navlink" href="#/brand" id="navBrand">Brand style</a>
+  <a class="navlink" href="#/settings" id="navSettings">Settings</a>
   <button class="btn btn-secondary" data-go="home">New video</button>
   <button class="userchip" data-user type="button"></button>
 </nav>
+
+<!-- ============================================================ SETTINGS -->
+<section id="settings" class="hidden wrap" style="padding-top:32px;padding-bottom:64px;display:flex;flex-direction:column;gap:28px">
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between;padding-bottom:20px;border-bottom:2px solid var(--color-text)">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <span class="eyebrow">Settings</span>
+      <h2 style="margin:0">Your account</h2>
+    </div>
+  </div>
+  <div class="setgrid">
+    <div class="setcard wide">
+      <h4>Connected accounts</h4>
+      <p>Connect your own channels so ClipForge can post Shorts and Reels for you. You approve access on Google / Instagram — ClipForge never sees your passwords, and you can disconnect any time.</p>
+      <div class="conns" id="conns"></div>
+    </div>
+    <div class="setcard">
+      <h4>Profile</h4>
+      <div style="display:flex;gap:16px;align-items:center"><div class="avatar" id="setAvatar"></div>
+        <div style="display:flex;flex-direction:column;gap:2px"><b id="setName"></b><span style="font-size:13px;color:var(--color-neutral-700)" id="setMeta"></span></div></div>
+      <div class="field"><label for="pfName">Name</label><input class="input" id="pfName" autocomplete="name"></div>
+      <div class="field"><label for="pfEmail">Email</label><input class="input" id="pfEmail" type="email" autocomplete="email"></div>
+      <div class="err" id="pfErr"></div>
+      <button class="btn btn-primary" id="pfSave" style="align-self:flex-start">Save profile</button>
+    </div>
+    <div class="setcard">
+      <h4>Password</h4>
+      <div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password"></div>
+      <div class="field"><label for="pwNew">New password</label><input class="input" id="pwNew" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div>
+      <div class="field"><label for="pwNew2">Repeat new password</label><input class="input" id="pwNew2" type="password" autocomplete="new-password"></div>
+      <div class="err" id="pwErr"></div>
+      <button class="btn btn-primary" id="pwSave" style="align-self:flex-start">Change password</button>
+      <span style="font-size:12px;color:var(--color-neutral-700)">Changing it logs you out on every other device.</span>
+    </div>
+    <div class="setcard">
+      <h4>Sessions</h4>
+      <p>Lost a laptop or used a shared computer? End every other login to your account.</p>
+      <button class="btn btn-secondary" id="logoutAll" style="align-self:flex-start">Log out of all other devices</button>
+    </div>
+    <div class="setcard danger">
+      <h4>Delete account</h4>
+      <p>Removes your account, every project and clip (also from cloud storage), your brand style and your connected accounts. This can't be undone.</p>
+      <div class="field"><label for="delPw">Confirm with your password</label><input class="input" id="delPw" type="password" autocomplete="current-password"></div>
+      <div class="err" id="delErr"></div>
+      <button class="btn btn-secondary" id="delAcct" style="align-self:flex-start;border-color:var(--color-accent-700);color:var(--color-accent-700)">Delete my account</button>
+    </div>
+  </div>
+</section>
 
 <!-- ============================================================ BRAND -->
 <section id="brand" class="hidden wrap" style="padding-top:32px;display:flex;flex-direction:column;gap:24px">
@@ -651,12 +720,13 @@ function screen(name) {
   $("umenu").classList.add("hidden");
   $("landing").classList.toggle("hidden", name !== "landing");
   $("appNav").classList.toggle("hidden", name === "landing");
-  for (const s of ["processing", "results", "editor", "brand"]) $(s).classList.toggle("hidden", s !== name);
+  for (const s of ["processing", "results", "editor", "brand", "settings"]) $(s).classList.toggle("hidden", s !== name);
+  $("navSettings").classList.toggle("on", name === "settings");
   const el = $(name);
   if (el && screen.last !== name) { el.classList.remove("enter"); void el.offsetWidth; el.classList.add("enter"); }
   screen.last = name;
   const idx = { processing: 1, results: 2, editor: 3 }[name] || 0;
-  $("stepper").style.visibility = name === "brand" ? "hidden" : "";
+  $("stepper").style.visibility = name === "brand" || name === "settings" ? "hidden" : "";
   $("stepper").innerHTML = ["Source", "Analyse", "Clips", "Edit"].map((l, i) =>
     `<span style="color:${i === idx ? "var(--color-accent)" : i < idx ? "var(--color-text)" : "var(--color-neutral-500)"};font-weight:${i === idx ? 800 : 500}">${String(i + 1).padStart(2, "0")} ${l}</span>`).join("");
   $("navBrand").classList.toggle("on", name === "brand");
@@ -666,7 +736,15 @@ function screen(name) {
 async function route() {
   clearTimeout(S.poll);
   if (!S.user) return showAuth();
-  if (location.hash === "#/brand") { screen("brand"); return openBrand(); }
+  const [hpath, hquery = ""] = location.hash.split("?");
+  if (hquery) {                                   // back from Google / Instagram: show the result once
+    const q = new URLSearchParams(hquery);
+    if (q.get("connected")) toast(`${q.get("connected") === "youtube" ? "YouTube" : "Instagram"} connected${q.get("name") ? " — " + q.get("name") : ""}`);
+    if (q.get("error")) toast(q.get("error"));
+    history.replaceState(null, "", hpath);
+  }
+  if (hpath === "#/brand") { screen("brand"); return openBrand(); }
+  if (hpath === "#/settings") { screen("settings"); return openSettings(); }
   const [, id, clip, action] = location.hash.match(/^#\/job\/([\w]+)(?:\/(clip_\d+))?(?:\/(publish))?/) || [];
   if (!id) { store.set("cf.lastJob", null); screen("landing"); loadProjects(); return; }
   if (S.jobId !== id) Object.assign(S, { jobId: id, M: null, sel: new Set(), edits: {}, words: null });
@@ -930,7 +1008,7 @@ function renderResults(animate = false) {
       <div style="display:flex;gap:8px;border-top:2px solid var(--color-divider);padding-top:8px">
         <button class="btn btn-secondary" data-edit style="flex:1;justify-content:flex-start">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" x2="8.12" y1="4" y2="15.88"/><line x1="14.47" x2="20" y1="14.48" y2="20"/><line x1="8.12" x2="12" y1="8.12" y2="12"/></svg>Edit</button>
-        <button class="btn btn-secondary btn-icon ${isOwner() ? "" : "hidden"}" data-publish title="Publish to YouTube / Instagram" aria-label="Publish">
+        <button class="btn btn-secondary btn-icon" data-publish title="Publish to YouTube / Instagram" aria-label="Publish">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
         <button class="btn btn-secondary btn-icon" data-download title="Download" aria-label="Download">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg></button>
@@ -1201,14 +1279,14 @@ function renderAccts(a) {
   P.accts = a;
   $("pubAccts").innerHTML = PLATS.map(([p, label]) => {
     const st = a && a[p];
-    let note, action = "", ok = !!(st && st.connected && !st.error);   // connected-with-warning can't post
+    let note, action = "", ok = !!(st && st.connected && !st.warning);   // connected-with-warning can't post
+    const back = P.ids.length === 1 ? `#/job/${S.jobId}/${P.ids[0]}/publish` : `#/job/${S.jobId}`;
     if (!a) note = "Checking connection…";
     else if (a.error) note = `<span class="bad">${esc(a.error)}</span>`;
-    else if (ok) note = `Connected as <b>${esc(st.name)}</b>`;
-    else if (st.error) note = `<span class="bad">${esc(st.error)}</span>`;
-    else if (p === "youtube" && st.configured) { note = "Not connected yet"; action = `<button class="btn btn-secondary" data-connect="youtube">Connect YouTube</button>`; }
-    else if (p === "youtube") note = "Add YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET to .env, then restart the server";
-    else note = "Add INSTAGRAM_ACCESS_TOKEN=… to .env, then restart the server";
+    else if (ok) note = `Your account: <b>${esc(st.name)}</b>`;
+    else if (st.warning) note = `<span class="bad">${esc(st.warning)}</span>`;
+    else if (st.configured) { note = "Not connected yet"; action = `<a class="btn btn-secondary" href="${connectUrl(p, back)}">Connect</a>`; }
+    else note = "Not available on this server yet — see Settings";
     const on = ok && (P.platforms ? P.platforms.has(p) : true);
     return `<div class="acct"><label class="check"><input type="checkbox" data-plat="${p}" ${ok ? "" : "disabled"} ${on ? "checked" : ""}></label>
       <div><span class="nm">${label}</span><small${/class="bad"/.test(note) ? ' class="bad"' : ""}>${note}</small></div>${action}</div>`;
@@ -1216,13 +1294,7 @@ function renderAccts(a) {
   P.platforms = new Set($$("#pubAccts input[data-plat]:checked").map((x) => x.dataset.plat));
 }
 $("pubAccts").addEventListener("change", (e) => { if (e.target.dataset.plat) P.platforms = new Set($$("#pubAccts input[data-plat]:checked").map((x) => x.dataset.plat)); });
-$("pubAccts").addEventListener("click", async (e) => {
-  const b = e.target.closest("[data-connect]"); if (!b) return;
-  b.disabled = true; b.textContent = "Approve in the browser window…";
-  try { await api("/publish/youtube/connect", { method: "POST" }); toast("YouTube connected"); }
-  catch (err) { toast("YouTube: " + err.message); }
-  renderAccts(await api("/publish/accounts").catch((er) => ({ error: er.message })));
-});
+const connectUrl = (p, next) => `/connect/${p}/start?next=${encodeURIComponent(next)}`;
 async function loadSocial(id, regenerate) {
   $("pubGen").textContent = regenerate ? "Rewriting with AI…" : "Writing titles and captions…";
   $$("#pubFields .input").forEach((x) => (x.disabled = true));
@@ -1477,6 +1549,88 @@ async function renderBrandPreview() {
 addEventListener("beforeunload", (e) => { if (B.cur && JSON.stringify(B.cur) !== JSON.stringify(B.saved)) e.preventDefault(); });
 
 // ---------------------------------------------------------------- start
+// ---------------------------------------------------------------- settings
+const ICONS = {
+  youtube: `<svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true"><rect width="44" height="44" fill="#FF0033"/><path d="M17 14l13 8-13 8z" fill="#fff"/></svg>`,
+  instagram: `<svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true"><defs><linearGradient id="igg" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#FEDA75"/><stop offset=".35" stop-color="#FA7E1E"/><stop offset=".65" stop-color="#D62976"/><stop offset="1" stop-color="#4F5BD5"/></linearGradient></defs><rect width="44" height="44" fill="url(#igg)"/><rect x="11" y="11" width="22" height="22" rx="6" fill="none" stroke="#fff" stroke-width="2.6"/><circle cx="22" cy="22" r="5.2" fill="none" stroke="#fff" stroke-width="2.6"/><circle cx="28.4" cy="15.6" r="1.6" fill="#fff"/></svg>`,
+};
+const PROVIDER_INFO = {
+  youtube: { label: "YouTube", what: "Post Shorts to your channel, set thumbnails and schedule premieres.",
+             setup: (cb) => `Server setup (owner): in Google Cloud create an OAuth client of type <b>Web application</b>, add <code>${cb}</code> as an authorized redirect URI, then put <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code> in .env and restart.`,
+             note: "While your Google app is in testing, each person's Google account must be added as a test user on the OAuth consent screen." },
+  instagram: { label: "Instagram", what: "Post Reels to a Creator or Business account — no Facebook Page needed.",
+               setup: (cb) => `Server setup (owner): in your Meta app → Instagram → <b>API setup with Instagram login</b>, add <code>${cb}</code> under Business login → OAuth redirect URIs (Meta requires https), then put <code>INSTAGRAM_APP_ID</code> and <code>INSTAGRAM_APP_SECRET</code> in .env and restart.`,
+               note: "While your Meta app is in development mode, each person must be added as an Instagram tester on the app." },
+};
+const since = (ts) => ts ? new Date(ts * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) : "";
+
+async function openSettings() {
+  let d;
+  try { d = await api("/settings"); } catch (e) { toast(e.message); return; }
+  S.settings = d;
+  const u = d.profile, initials = (u.name || u.email).split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join("");
+  $("setAvatar").textContent = initials; $("setName").textContent = u.name;
+  $("setMeta").textContent = `${u.role === "owner" ? "Owner" : "Member"} · joined ${since(u.created)}`;
+  $("pfName").value = u.name; $("pfEmail").value = u.email;
+  ["pfErr", "pwErr", "delErr"].forEach((id) => ($(id).textContent = ""));
+  renderConns();
+}
+function renderConns() {
+  const acc = S.settings.accounts;
+  $("conns").innerHTML = ["youtube", "instagram"].map((p) => {
+    const a = acc[p], info = PROVIDER_INFO[p], cb = location.origin + S.settings.redirects[p];
+    const on = a.connected;
+    let body;
+    if (on) body = `<div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-secondary" data-disconnect="${p}">Disconnect</button>
+        <a class="btn btn-ghost" href="${connectUrl(p, "#/settings")}">Switch account</a></div>
+        ${a.warning ? `<small style="color:var(--color-accent-700);font-weight:700">${esc(a.warning)}</small>` : ""}
+        <small>Connected ${since(a.since)}${a.expires ? ` · renews automatically (current login valid until ${since(a.expires)})` : ""}</small>`;
+    else if (a.configured) body = `<a class="btn btn-primary" href="${connectUrl(p, "#/settings")}" style="align-self:flex-start">Connect ${info.label} →</a>
+        <small>You'll approve access on ${info.label}, then come straight back here. ${info.note}</small>`;
+    else body = `<button class="btn btn-secondary" disabled style="align-self:flex-start">Not available yet</button>
+        <small>${isOwner() ? info.setup(cb) : "The server owner hasn't set up " + info.label + " sign-in yet."}</small>`;
+    return `<div class="conn ${on ? "on" : ""}"><div class="conn-head">${ICONS[p]}<div><b>${info.label}</b><span>${info.what}</span></div></div>
+      <span class="state"><i></i>${on ? `Connected · ${esc(a.name)}` : "Not connected"}</span>${body}</div>`;
+  }).join("");
+}
+$("conns").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-disconnect]"); if (!b) return;
+  const p = b.dataset.disconnect;
+  if (!confirm(`Disconnect ${PROVIDER_INFO[p].label}? Scheduled posts to it will fail until you connect again.`)) return;
+  try { await api(`/connect/${p}`, { method: "DELETE" }); toast(`${PROVIDER_INFO[p].label} disconnected`); openSettings(); }
+  catch (err) { toast(err.message); }
+});
+$("pfSave").onclick = async () => {
+  $("pfErr").textContent = "";
+  try {
+    S.user = await api("/settings/profile", { method: "PATCH", headers: { "Content-Type": "application/json" },
+                                               body: JSON.stringify({ name: $("pfName").value, email: $("pfEmail").value }) });
+    renderUserChip(); toast("Profile saved"); openSettings();
+  } catch (err) { $("pfErr").textContent = err.message; }
+};
+$("pwSave").onclick = async () => {
+  $("pwErr").textContent = "";
+  if ($("pwNew").value !== $("pwNew2").value) return ($("pwErr").textContent = "The new passwords don't match.");
+  try {
+    await api("/settings/password", { method: "POST", headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ current: $("pwCur").value, new: $("pwNew").value }) });
+    ["pwCur", "pwNew", "pwNew2"].forEach((id) => ($(id).value = "")); toast("Password changed — other devices were logged out");
+  } catch (err) { $("pwErr").textContent = err.message; }
+};
+$("logoutAll").onclick = async () => {
+  try { const r = await api("/settings/logout-all", { method: "POST" }); toast(r.ended ? `Logged out of ${r.ended} other device${r.ended > 1 ? "s" : ""}` : "No other devices were logged in"); }
+  catch (err) { toast(err.message); }
+};
+$("delAcct").onclick = async () => {
+  $("delErr").textContent = "";
+  if (!$("delPw").value) return ($("delErr").textContent = "Enter your password to confirm.");
+  if (!confirm("Delete your account and everything in it? This can't be undone.")) return;
+  try {
+    await api("/settings/delete-account", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: $("delPw").value }) });
+    store.set("cf.lastJob", null); location.hash = ""; showAuth(); toast("Your account was deleted");
+  } catch (err) { $("delErr").textContent = err.message; }
+};
+
 // ---------------------------------------------------------------- accounts
 const isOwner = () => S.user?.role === "owner";
 const thumbUrl = (c) => c.cloud?.thumb || fileUrl(c.thumbnail, c);
@@ -1485,7 +1639,7 @@ let AUTH = { mode: "login", config: {} };
 
 function showAuth() {
   S.user = null;
-  for (const id of ["landing", "appNav", "processing", "results", "editor", "brand"]) $(id).classList.add("hidden");
+  for (const id of ["landing", "appNav", "processing", "results", "editor", "brand", "settings"]) $(id).classList.add("hidden");
   $("umenu").classList.add("hidden");
   $("authView").classList.remove("hidden");
   setAuthMode(AUTH.config.first_user ? "signup" : AUTH.mode);
@@ -1526,11 +1680,10 @@ function renderUserChip() {
   const initials = (u.name || u.email).split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((s) => s[0].toUpperCase()).join("");
   $$("[data-user]").forEach((b) => (b.innerHTML = `<i>${esc(initials)}</i>${esc(u.name)}`));
   $("umenu").innerHTML = `<div><b style="display:block">${esc(u.name)}</b><span style="font-size:13px;color:var(--color-neutral-700);overflow-wrap:anywhere">${esc(u.email)}</span></div>
-    <span class="tag ${u.role === "owner" ? "tag-accent" : "tag-neutral"}" style="align-self:flex-start">${u.role === "owner" ? "Owner · can publish" : "Member"}</span>
+    <span class="tag ${u.role === "owner" ? "tag-accent" : "tag-neutral"}" style="align-self:flex-start">${u.role === "owner" ? "Owner" : "Member"}</span>
     <span style="font-size:12px;color:var(--color-neutral-700)">Storage: ${S.cloud ? "Cloudinary" : "this PC"} · Data: MongoDB</span>
-    <button class="btn btn-secondary btn-block" id="logout" type="button">Log out</button>`;
-  $("publishSel").classList.toggle("hidden", !isOwner());
-  $("publishCurrent").classList.toggle("hidden", !isOwner());
+    <a class="btn btn-secondary btn-block" href="#/settings">Settings &amp; connected accounts</a>
+    <button class="btn btn-ghost btn-block" id="logout" type="button">Log out</button>`;
 }
 document.addEventListener("click", async (e) => {
   if (e.target.closest("[data-user]")) { $("umenu").classList.toggle("hidden"); return; }

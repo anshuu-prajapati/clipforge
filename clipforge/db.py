@@ -30,6 +30,7 @@ def db():
         d.jobs.create_index([("user_id", ASCENDING), ("created", DESCENDING)])
         d.jobs.create_index("state")
         d.schedule.create_index("at")
+        d.oauth_states.create_index("expires", expireAfterSeconds=0)  # unfinished Connect clicks vanish
     except PyMongoError as e:
         raise DatabaseError(f"Can't reach MongoDB: {e}") from None
     return d

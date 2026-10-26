@@ -31,12 +31,13 @@ import threading
 import time
 import uuid
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Optional
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -67,16 +68,6 @@ def current_user(request: Request) -> dict:
 
 
 User = Annotated[dict, Depends(current_user)]
-
-
-def owner(user: User) -> dict:
-    if user.get("role") != "owner":
-        raise HTTPException(403, "Only the owner account can publish — the connected YouTube and "
-                                 "Instagram accounts belong to them.")
-    return user
-
-
-Owner = Annotated[dict, Depends(owner)]
 
 
 class Credentials(BaseModel):
@@ -514,27 +505,52 @@ def _set_status(job_id: str, clip_id: str, platform: str, **kw) -> None:
     _set(job_id, **{f"publish.{clip_id}.{platform}.{k}": v for k, v in kw.items()})
 
 
+def _connection(user_id: str, platform: str) -> dict:
+    user = db().users.find_one({"_id": user_id}, {"connections": 1}) or {}
+    conn = (user.get("connections") or {}).get(platform)
+    if not conn:
+        name = "YouTube" if platform == "youtube" else "Instagram"
+        raise RuntimeError(f"Connect your {name} account in Settings first.")
+    return conn
+
+
 def _publish_one(job_id: str, clip_id: str, platform: str, opts: dict) -> None:
-    """Upload one clip to one platform (runs in a background thread)."""
-    from . import publish
+    """Upload one clip to the job owner's own connected account (runs in a background thread)."""
+    from . import connections, publish
     d = ROOT / job_id
     try:
+        user_id = db().jobs.find_one({"_id": job_id}, {"user_id": 1})["user_id"]
         _, c = _clip(job_id, clip_id)
         s = _social_for(job_id, clip_id)
         post = (opts.get("post") or {})
         video = d / c["file"]
         prog = lambda st, p: _set_status(job_id, clip_id, platform, state="running", step=st, pct=round(p, 3))  # noqa: E731
         _set_status(job_id, clip_id, platform, state="running", step="starting", pct=0, error=None)
+        conn = _connection(user_id, platform)
         if platform == "youtube":
             yt = {**s["youtube"], **(post.get("youtube") or {})}
             at = opts.get("publish_at")
             r = publish.youtube_upload(video, yt["title"], yt["description"], yt.get("tags", []),
                                        privacy=opts.get("privacy", "public"),
                                        publish_at=datetime.fromtimestamp(at, timezone.utc) if at else None,
-                                       thumbnail=d / s["cover"], progress=prog)
+                                       thumbnail=d / s["cover"], progress=prog,
+                                       creds=connections.youtube_creds(conn))
         else:
             ig = {**s["instagram"], **(post.get("instagram") or {})}
-            r = publish.instagram_upload(video, ig["caption"], s.get("cover_ms", 0), progress=prog)
+            if not (c.get("cloud") or {}).get("video"):   # Instagram needs a public URL: put the clip in the cloud
+                if not storage.enabled():
+                    raise RuntimeError("Instagram downloads videos from a public link — add CLOUDINARY_URL "
+                                       "to the server's .env so clips are stored in the cloud.")
+                prog("uploading to cloud storage", 0.03)
+                m = _cloud_sync(job_id, user_id, _manifest(job_id), {clip_id})
+                _save_manifest(job_id, m)
+                c = next(x for x in m["clips"] if x["id"] == clip_id)
+                if not (c.get("cloud") or {}).get("video"):
+                    raise RuntimeError("Cloud upload failed: " + c.get("cloud_error", "unknown error"))
+            save = lambda new: db().users.update_one({"_id": user_id}, {"$set": {"connections.instagram": new}})  # noqa: E731
+            r = publish.instagram_publish_url(connections.instagram_token(conn, save), conn["id"], c["cloud"]["video"],
+                                              ig["caption"], (c.get("cloud") or {}).get("thumb"), s.get("cover_ms", 0),
+                                              progress=prog)
         _set_status(job_id, clip_id, platform, state="scheduled" if opts.get("publish_at") and platform == "youtube"
                     else "done", pct=1, step="done", **r)
     except Exception as e:  # noqa: BLE001
@@ -554,19 +570,23 @@ def _scheduler() -> None:
         time.sleep(20)
 
 
+def _accounts(user: dict) -> dict:
+    """The user's own connections, for Settings and the publish dialog (no secrets)."""
+    from . import connections
+    conns = user.get("connections") or {}
+    out = {}
+    for p, configured in (("youtube", bool(connections.google_client())), ("instagram", bool(connections.instagram_app()))):
+        c = conns.get(p)
+        out[p] = {"configured": configured, "connected": bool(c), "name": c and c.get("name"),
+                  "since": c and c.get("connected_at"), "expires": c and c.get("expires")}
+    if not storage.enabled():
+        out["instagram"]["warning"] = "Needs cloud storage (CLOUDINARY_URL) on the server to post Reels."
+    return out
+
+
 @app.get("/publish/accounts")
-def publish_accounts(user: Owner):
-    from . import publish
-    return publish.accounts()
-
-
-@app.post("/publish/youtube/connect")
-def youtube_connect(user: Owner):
-    from . import publish
-    try:
-        return publish.youtube_connect()
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, str(e))
+def publish_accounts(user: User):
+    return _accounts(user)
 
 
 @app.get("/jobs/{job_id}/publish")
@@ -592,12 +612,15 @@ class PublishReq(BaseModel):
 
 
 @app.post("/jobs/{job_id}/publish")
-def publish_clips(job_id: str, req: PublishReq, user: Owner):
+def publish_clips(job_id: str, req: PublishReq, user: User):
     _job(job_id, user, {"_id": 1})
     if not set(req.platforms) <= {"youtube", "instagram"} or not req.platforms:
         raise HTTPException(400, "platforms must be youtube and/or instagram")
     for cid in req.clips:
         _clip(job_id, cid)
+    missing = [p for p in req.platforms if not (user.get("connections") or {}).get(p)]
+    if missing:
+        raise HTTPException(400, f"Connect your {' and '.join(m.capitalize() for m in missing)} account in Settings first.")
     if req.post and len(req.clips) == 1:       # keep edits so the dialog shows them next time
         _set(job_id, **{f"social.{req.clips[0]}.{k}.{f}": v for k in ("youtube", "instagram")
                         for f, v in (req.post.get(k) or {}).items()})
@@ -620,3 +643,154 @@ def publish_clips(job_id: str, req: PublishReq, user: Owner):
                 _set_status(job_id, cid, platform, state="waiting", pct=0, error=None, at=at)
             queued.append({"clip": cid, "platform": platform, "at": at})
     return {"queued": queued}
+
+
+# =========================================================================== connect accounts (OAuth)
+PROVIDERS = ("youtube", "instagram")
+
+
+def _redirect_uri(request: Request, provider: str) -> str:
+    base = (os.environ.get("PUBLIC_URL") or str(request.base_url)).rstrip("/")
+    return f"{base}/connect/{provider}/callback"
+
+
+def _back(next_hash: str, **params) -> RedirectResponse:
+    q = "&".join(f"{k}={quote(str(v))}" for k, v in params.items())
+    target = next_hash if next_hash.startswith("#/") else "#/settings"
+    return RedirectResponse(f"/{target}{'&' if '?' in target else '?'}{q}", status_code=303)
+
+
+@app.get("/connect/{provider}/start")
+def connect_start(provider: str, request: Request, user: User, next: str = "#/settings"):
+    """Send the user to Google / Instagram to grant ClipForge access to their own account."""
+    from . import connections
+    if provider not in PROVIDERS:
+        raise HTTPException(404)
+    if provider == "youtube" and not connections.google_client():
+        return _back(next, error="YouTube sign-in isn't set up on this server yet (GOOGLE_OAUTH_CLIENT_ID).")
+    if provider == "instagram" and not connections.instagram_app():
+        return _back(next, error="Instagram sign-in isn't set up on this server yet (INSTAGRAM_APP_ID).")
+    state = uuid.uuid4().hex + uuid.uuid4().hex
+    redirect = _redirect_uri(request, provider)
+    doc = {"_id": state, "user_id": user["_id"], "provider": provider, "next": next, "redirect": redirect,
+           "expires": datetime.now(timezone.utc) + timedelta(minutes=15)}
+    if provider == "youtube":
+        url, doc["verifier"] = connections.google_auth_url(redirect, state)
+    else:
+        url = connections.instagram_auth_url(redirect, state)
+    db().oauth_states.insert_one(doc)
+    return RedirectResponse(url, status_code=303)
+
+
+@app.get("/connect/{provider}/callback")
+def connect_callback(provider: str, state: str = "", code: str = "", error: str = "",
+                     error_description: str = "", error_reason: str = ""):
+    """Provider sends the user back here; the one-time state ties the result to the right account."""
+    from . import connections
+    st = db().oauth_states.find_one_and_delete({"_id": state, "provider": provider}) if state else None
+    if not st or st["expires"].replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        return _back("#/settings", error="That sign-in link expired — click Connect again.")
+    if error or not code:
+        return _back(st["next"], error=error_description or error_reason or error or "Access was not granted.")
+    try:
+        if provider == "youtube":
+            conn = connections.google_finish(st["redirect"], code, st["verifier"])
+        else:
+            conn = connections.instagram_finish(st["redirect"], code)
+    except Exception as e:  # noqa: BLE001
+        return _back(st["next"], error=f"Couldn't connect: {str(e)[:200]}")
+    db().users.update_one({"_id": st["user_id"]}, {"$set": {f"connections.{provider}": conn}})
+    return _back(st["next"], connected=provider, name=conn.get("name", ""))
+
+
+@app.delete("/connect/{provider}")
+def disconnect(provider: str, user: User):
+    from . import connections
+    if provider not in PROVIDERS:
+        raise HTTPException(404)
+    conn = (user.get("connections") or {}).get(provider)
+    if conn and provider == "youtube":
+        connections.google_revoke(conn)
+    db().users.update_one({"_id": user["_id"]}, {"$unset": {f"connections.{provider}": ""}})
+    return {"ok": True}
+
+
+# =========================================================================== settings: profile & account
+@app.get("/settings")
+def get_settings(user: User):
+    return {"profile": {**auth.safe_user(user), "created": user.get("created")}, "accounts": _accounts(user),
+            "storage": "cloudinary" if storage.enabled() else "local",
+            "redirects": {p: f"/connect/{p}/callback" for p in PROVIDERS}}
+
+
+class ProfileReq(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+@app.patch("/settings/profile")
+def update_profile(req: ProfileReq, user: User):
+    upd = {}
+    if req.name is not None:
+        if not req.name.strip():
+            raise HTTPException(400, "Name can't be empty.")
+        upd["name"] = req.name.strip()[:60]
+    if req.email is not None and req.email.strip().lower() != user["email"]:
+        email = req.email.strip().lower()
+        if not auth.EMAIL_RE.match(email):
+            raise HTTPException(400, "Enter a valid email address.")
+        if db().users.find_one({"email": email}, {"_id": 1}):
+            raise HTTPException(400, "Another account already uses that email.")
+        upd["email"] = email
+    if upd:
+        db().users.update_one({"_id": user["_id"]}, {"$set": upd})
+    return auth.safe_user({**user, **upd})
+
+
+class PasswordReq(BaseModel):
+    current: str
+    new: str
+
+
+@app.post("/settings/password")
+def change_password(req: PasswordReq, request: Request, user: User):
+    if not auth.check_password(req.current, user["password"]):
+        raise HTTPException(400, "Your current password isn't right.")
+    if len(req.new) < 8:
+        raise HTTPException(400, "Use a new password with at least 8 characters.")
+    db().users.update_one({"_id": user["_id"]}, {"$set": {"password": auth.hash_password(req.new)}})
+    keep = auth._token_hash(request.cookies.get(auth.COOKIE, ""))   # other devices are logged out
+    db().sessions.delete_many({"user_id": user["_id"], "token": {"$ne": keep}})
+    return {"ok": True}
+
+
+@app.post("/settings/logout-all")
+def logout_all(request: Request, user: User):
+    keep = auth._token_hash(request.cookies.get(auth.COOKIE, ""))
+    n = db().sessions.delete_many({"user_id": user["_id"], "token": {"$ne": keep}}).deleted_count
+    return {"ended": n}
+
+
+class DeleteReq(BaseModel):
+    password: str
+
+
+@app.post("/settings/delete-account")
+def delete_account(req: DeleteReq, response: Response, user: User):
+    from . import connections
+    if not auth.check_password(req.password, user["password"]):
+        raise HTTPException(400, "Wrong password.")
+    if db().jobs.find_one({"user_id": user["_id"], "state": {"$in": ["queued", "running"]}}, {"_id": 1}):
+        raise HTTPException(409, "A video is still processing — wait for it to finish first.")
+    if (user.get("connections") or {}).get("youtube"):
+        connections.google_revoke(user["connections"]["youtube"])
+    for j in db().jobs.find({"user_id": user["_id"]}, {"_id": 1}):
+        shutil.rmtree(ROOT / j["_id"], ignore_errors=True)
+    if storage.enabled():
+        storage.delete_folder(f"clipforge/{user['_id']}")
+    shutil.rmtree(BRAND_ASSETS / user["_id"], ignore_errors=True)
+    for coll in ("jobs", "schedule", "sessions", "oauth_states"):
+        db()[coll].delete_many({"user_id": user["_id"]})
+    db().users.delete_one({"_id": user["_id"]})
+    response.delete_cookie(auth.COOKIE, path="/")
+    return {"ok": True}

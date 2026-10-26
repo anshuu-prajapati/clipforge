@@ -18,6 +18,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_start", lambda job_id: None)        # don't run the real pipeline
     monkeypatch.delenv("CLIPFORGE_SIGNUP_CODE", raising=False)
     monkeypatch.delenv("CLIPFORGE_SIGNUP", raising=False)
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("CLIPFORGE_SECRET_KEY", Fernet.generate_key().decode())   # never touch the real .env
     c = TestClient(server.app)
     c.mem = mem
     return c
@@ -90,14 +92,88 @@ def test_brand_is_per_user_and_new_jobs_use_it(client):
     assert stored["input"]["template"]["captions"]["highlight_color"] == "#00E676"
 
 
-def test_publishing_is_owner_only(client):
+def test_publish_needs_your_own_connection(client):
     signup(client, "owner@example.com")
     member = TestClient(server.app)
     signup(member, "member@example.com")
     job = member.post("/jobs", data={"url": "https://youtu.be/abc123xyz"}).json()
-    assert member.get("/publish/accounts").status_code == 403
+    client.mem.jobs.update_one({"_id": job["id"]}, {"$set": {"manifest": {"source": "x", "clips": [{"id": "clip_01"}]}}})
+    acc = member.get("/publish/accounts").json()
+    assert acc["youtube"]["connected"] is False and acc["instagram"]["connected"] is False
     r = member.post(f"/jobs/{job['id']}/publish", json={"clips": ["clip_01"], "platforms": ["youtube"]})
-    assert r.status_code == 403
+    assert r.status_code == 400 and "Settings" in r.json()["detail"]
+
+
+def test_connect_flow_ties_the_account_to_the_user_who_started_it(client, monkeypatch):
+    from clipforge import connections
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(connections, "google_auth_url", lambda redirect, state: (f"https://accounts.google.com/o?state={state}", "verifier"))
+    seen = {}
+    def finish(redirect, code, verifier):
+        seen.update(redirect=redirect, code=code, verifier=verifier)
+        return {"refresh_token": connections.seal("refresh-123"), "id": "UC1", "name": "My Channel", "connected_at": 1}
+    monkeypatch.setattr(connections, "google_finish", finish)
+    monkeypatch.setattr(connections, "google_revoke", lambda conn: None)
+    signup(client, "owner@example.com")
+    r = client.get("/connect/youtube/start?next=%23%2Fjob%2Fabc", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("https://accounts.google.com/")
+    state = client.mem.oauth_states.find_one({})["_id"]
+    stranger = TestClient(server.app)                       # the provider redirect carries no cookie
+    r = stranger.get(f"/connect/youtube/callback?state={state}&code=abc", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/#/job/abc?connected=youtube")
+    assert seen == {"redirect": "http://testserver/connect/youtube/callback", "code": "abc", "verifier": "verifier"}
+    owner_doc = client.mem.users.find_one({"email": "owner@example.com"})
+    assert owner_doc["connections"]["youtube"]["name"] == "My Channel"
+    assert "refresh-123" not in str(owner_doc)                # stored encrypted
+    assert connections.unseal(owner_doc["connections"]["youtube"]["refresh_token"]) == "refresh-123"
+    again = stranger.get(f"/connect/youtube/callback?state={state}&code=abc", follow_redirects=False)
+    assert "error=" in again.headers["location"]           # states are single-use
+    assert client.get("/publish/accounts").json()["youtube"] | {} == {
+        "configured": True, "connected": True, "name": "My Channel", "since": 1, "expires": None}
+    member = TestClient(server.app)
+    signup(member, "member@example.com")
+    assert member.get("/publish/accounts").json()["youtube"]["connected"] is False
+    assert client.delete("/connect/youtube").status_code == 200
+    assert client.get("/publish/accounts").json()["youtube"]["connected"] is False
+
+
+def test_connect_denied_or_unconfigured(client, monkeypatch):
+    monkeypatch.delenv("INSTAGRAM_APP_ID", raising=False)
+    signup(client, "owner@example.com")
+    r = client.get("/connect/instagram/start", follow_redirects=False)
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    r = client.get("/connect/youtube/callback?state=nope&code=x", follow_redirects=False)
+    assert "expired" in r.headers["location"]
+
+
+def test_settings_profile_password_sessions_and_delete(client):
+    signup(client, "owner@example.com", name="Old")
+    signup(TestClient(server.app), "taken@example.com")
+    assert client.patch("/settings/profile", json={"name": "New Name"}).json()["name"] == "New Name"
+    assert client.patch("/settings/profile", json={"email": "taken@example.com"}).status_code == 400
+    assert client.patch("/settings/profile", json={"email": "me@example.com"}).json()["email"] == "me@example.com"
+    other_device = TestClient(server.app)
+    other_device.post("/auth/login", json={"email": "me@example.com", "password": "password123"})
+    assert client.post("/settings/password", json={"current": "wrong-one", "new": "newpassword1"}).status_code == 400
+    assert client.post("/settings/password", json={"current": "password123", "new": "newpassword1"}).status_code == 200
+    assert other_device.get("/auth/me").status_code == 401     # other sessions ended
+    assert client.get("/auth/me").status_code == 200            # this one kept
+    job = client.post("/jobs", data={"url": "https://youtu.be/abc123xyz"}).json()
+    client.mem.jobs.update_one({"_id": job["id"]}, {"$set": {"state": "done"}})
+    assert client.post("/settings/delete-account", json={"password": "password123"}).status_code == 400
+    assert client.post("/settings/delete-account", json={"password": "newpassword1"}).status_code == 200
+    assert client.mem.users.find_one({"email": "me@example.com"}) is None
+    assert client.mem.jobs.count_documents({"_id": job["id"]}) == 0
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_tokens_are_encrypted_at_rest(monkeypatch):
+    from cryptography.fernet import Fernet
+    from clipforge import connections
+    monkeypatch.setenv("CLIPFORGE_SECRET_KEY", Fernet.generate_key().decode())
+    sealed = connections.seal("IGAA-very-secret")
+    assert "IGAA" not in sealed and connections.unseal(sealed) == "IGAA-very-secret"
 
 
 def test_first_user_claims_local_projects(client, tmp_path):

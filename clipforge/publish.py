@@ -88,8 +88,8 @@ def youtube_connect() -> dict:
     return youtube_account() or {}
 
 
-def youtube_account() -> Optional[dict]:
-    creds = _yt_creds()
+def youtube_account(creds=None) -> Optional[dict]:
+    creds = creds or _yt_creds()
     if not creds:
         return None
     from googleapiclient.discovery import build
@@ -102,12 +102,13 @@ def youtube_account() -> Optional[dict]:
 
 def youtube_upload(video: Path, title: str, description: str, tags: list[str], privacy: str = "private",
                    publish_at: Optional[datetime] = None, thumbnail: Optional[Path] = None,
-                   progress: Progress = lambda s, p: None) -> dict:
+                   progress: Progress = lambda s, p: None, creds=None) -> dict:
+    """creds: a user's connected account (dashboard); default = the .env account (CLI)."""
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
     from googleapiclient.http import MediaFileUpload
 
-    creds = _yt_creds()
+    creds = creds or _yt_creds()
     if not creds:
         raise PublishError("YouTube is not connected.")
     yt = build("youtube", "v3", credentials=creds, cache_discovery=False)
@@ -263,6 +264,32 @@ def instagram_upload(video: Path, caption: str, cover_ms: int = 0,
     m = _ig("POST", f"{base}/{acct['id']}/media_publish", data={"creation_id": cid, "access_token": token})
     link = _ig("GET", f"{base}/{m['id']}", params={"fields": "permalink", "access_token": token}).get("permalink")
     return {"id": m["id"], "url": link, "username": acct.get("username")}
+
+
+def instagram_publish_url(token: str, ig_user_id: str, video_url: str, caption: str,
+                          cover_url: Optional[str] = None, cover_ms: int = 0,
+                          progress: Progress = lambda s, p: None) -> dict:
+    """Instagram-Login token: Instagram downloads the Reel from a public URL (e.g. Cloudinary)."""
+    base = f"https://graph.instagram.com/{IG_VERSION}"
+    fields = {"media_type": "REELS", "video_url": video_url, "caption": caption[:2200], "share_to_feed": "true",
+              "access_token": token}
+    fields |= {"cover_url": cover_url} if cover_url else {"thumb_offset": str(max(0, cover_ms))}
+    progress("sending to Instagram", 0.1)
+    cid = _ig("POST", f"{base}/{ig_user_id}/media", data=fields)["id"]
+    for i in range(120):                          # Instagram downloads + transcodes (usually < 1 min)
+        st = _ig("GET", f"{base}/{cid}", params={"fields": "status_code,status", "access_token": token})
+        if st.get("status_code") == "FINISHED":
+            break
+        if st.get("status_code") in ("ERROR", "EXPIRED"):
+            raise PublishError(f"Instagram could not process the video: {st.get('status')}")
+        progress("Instagram is processing the video", 0.2 + min(0.7, i / 40))
+        time.sleep(5)
+    else:
+        raise PublishError("Instagram took too long to process the video.")
+    progress("publishing", 0.95)
+    m = _ig("POST", f"{base}/{ig_user_id}/media_publish", data={"creation_id": cid, "access_token": token})
+    link = _ig("GET", f"{base}/{m['id']}", params={"fields": "permalink", "access_token": token}).get("permalink")
+    return {"id": m["id"], "url": link}
 
 
 # =========================================================================== status
