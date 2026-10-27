@@ -6,7 +6,8 @@ fastapi
 uvicorn
 python-multipart
 # optional: yt-dlp (for YouTube/TikTok/IG/X/FB links)
-yt-dlp
+yt-dlp[default]   # [default] adds yt-dlp-ejs, needed for YouTube's JavaScript challenges
+deno>=2.5         # JavaScript runtime yt-dlp uses for those challenges (installed like any package)
 # publishing to YouTube Shorts / Instagram Reels
 google-api-python-client
 google-auth-oauthlib

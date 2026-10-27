@@ -440,6 +440,7 @@ def _work(job_id: str) -> None:
 
 @app.on_event("startup")
 def _startup() -> None:
+    _use_cookies()
     try:
         db()
     except DatabaseError as e:
@@ -1111,6 +1112,7 @@ def get_settings(request: Request, user: User):
     return {"profile": {**auth.safe_user(user), "created": user.get("created")}, **_accounts_payload(user),
             "storage": "cloudinary" if storage.enabled() else "local",
             "public_url": os.environ.get("PUBLIC_URL") or None,
+            "youtube_cookies": _cookies_status() if user.get("role") == "owner" else None,
             "redirects": {p: _redirect_uri(request, p) for p in PROVIDERS}}
 
 
@@ -1155,6 +1157,68 @@ def change_password(req: PasswordReq, request: Request, user: User):
     db().password_resets.delete_many({"user_id": user["_id"]})        # outstanding reset links stop working
     _notify_password_changed(user, request)
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- owner: YouTube cookies for yt-dlp
+def _cookies_path() -> Path:
+    return ROOT / ".youtube-cookies.txt"
+
+
+def _use_cookies() -> None:
+    if _cookies_path().is_file():
+        os.environ["YTDLP_COOKIES"] = str(_cookies_path())
+    else:
+        os.environ.pop("YTDLP_COOKIES", None)
+
+
+def _cookies_status() -> dict:
+    p = _cookies_path()
+    if not p.is_file():
+        return {"present": False}
+    text = p.read_text(encoding="utf-8", errors="replace")
+    rows = [ln.split("\t") for ln in text.splitlines() if ln.strip() and not ln.startswith("#") and ln.count("\t") >= 6]
+    expiries = [int(r[4]) for r in rows if r[4].isdigit() and int(r[4]) > 0 and "youtube" in r[0]]
+    return {"present": True, "updated": p.stat().st_mtime, "cookies": len(rows),
+            "expires": min(expiries) if expiries else None}
+
+
+def _owner(user: dict) -> None:
+    if user.get("role") != "owner":
+        raise HTTPException(403, "Only the owner can change server settings.")
+
+
+@app.get("/admin/youtube-cookies")
+def youtube_cookies_status(user: User):
+    _owner(user)
+    return _cookies_status()
+
+
+@app.post("/admin/youtube-cookies")
+async def upload_youtube_cookies(user: User, file: UploadFile = File(...)):
+    """cookies.txt (Netscape format) exported from a browser logged in to YouTube."""
+    _owner(user)
+    data = (await file.read(2_000_001)).decode("utf-8", errors="replace")
+    if len(data) > 2_000_000:
+        raise HTTPException(400, "That file is too big to be a cookies.txt export.")
+    rows = [ln for ln in data.splitlines() if ln.strip() and not ln.startswith("#") and ln.count("\t") >= 6]
+    if not rows or not any(".youtube.com" in ln.split("\t")[0] for ln in rows):
+        raise HTTPException(400, "This isn't a YouTube cookies.txt — export cookies for youtube.com in "
+                                 "Netscape format (e.g. with the “Get cookies.txt LOCALLY” extension).")
+    p = _cookies_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+    _use_cookies()
+    return _cookies_status()
+
+
+@app.delete("/admin/youtube-cookies")
+def delete_youtube_cookies(user: User):
+    _owner(user)
+    _cookies_path().unlink(missing_ok=True)
+    _use_cookies()
+    return {"present": False}
 
 
 @app.get("/settings/sessions")

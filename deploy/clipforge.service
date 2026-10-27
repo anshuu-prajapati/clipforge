@@ -8,6 +8,8 @@ User=clipforge
 Group=clipforge
 WorkingDirectory=/var/lib/clipforge
 Environment=PYTHONPATH=/opt/clipforge
+# venv bin first: yt-dlp finds the deno runtime installed from requirements.txt
+Environment=PATH=/opt/clipforge/.venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=CLIPFORGE_ENV_FILE=/var/lib/clipforge/.env
 Environment=CLIPFORGE_DATA=/var/lib/clipforge/jobs
 Environment=HOME=/var/lib/clipforge

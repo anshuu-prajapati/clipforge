@@ -424,6 +424,24 @@
       <p>Add as many YouTube channels and Instagram accounts as you like — paste their credentials (Client ID, secret, token) or sign in. Each one is checked when you save it; secrets are stored encrypted. Pick which ones to post to in the Publish dialog.</p>
       <div class="conns" id="conns"></div>
     </div>
+    <div class="setcard wide hidden" id="ytCookiesCard">
+      <h4>YouTube links on this server <span class="tag tag-neutral" style="vertical-align:middle">Owner</span></h4>
+      <p>YouTube asks cloud servers to “sign in to confirm you're not a bot”. Upload cookies from a browser that's logged in to YouTube and links work again for everyone on this server.</p>
+      <div id="ytCookiesState" style="font-size:14px"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <label class="btn btn-primary">Upload cookies.txt<input type="file" accept=".txt,text/plain" id="ytCookiesFile" hidden></label>
+        <button class="btn btn-secondary hidden" type="button" id="ytCookiesDel">Remove</button>
+      </div>
+      <details class="grp"><summary style="font-size:15px">How do I get cookies.txt?</summary>
+        <ol style="font-size:13px;line-height:1.6;margin:0 0 10px;padding-left:20px">
+          <li>Use a <b>separate Google account</b> for this (not your main one) and log in to youtube.com with it in Chrome or Edge.</li>
+          <li>Install the browser extension <b>“Get cookies.txt LOCALLY”</b>.</li>
+          <li>On youtube.com, click the extension → <b>Export</b> (Netscape format) — you get a <code>youtube.com_cookies.txt</code> file.</li>
+          <li>Upload it here. When YouTube links fail again (cookies expire after a while), upload a fresh one.</li>
+        </ol>
+        <p style="font-size:12px;color:var(--color-neutral-700);margin:0 0 10px">The file works like a login for that Google account — it's stored only on this server, readable only by ClipForge, and never shown again.</p>
+      </details>
+    </div>
     <div class="setcard">
       <h4>Profile</h4>
       <div style="display:flex;gap:16px;align-items:center"><div class="avatar" id="setAvatar"></div>
@@ -1607,7 +1625,26 @@ async function openSettings() {
   ["pfErr", "pwErr", "delErr"].forEach((id) => ($(id).textContent = ""));
   renderConns();
   loadSessions();
+  renderCookies(d.youtube_cookies);
 }
+function renderCookies(st) {
+  $("ytCookiesCard").classList.toggle("hidden", !st);
+  if (!st) return;
+  $("ytCookiesDel").classList.toggle("hidden", !st.present);
+  $("ytCookiesState").innerHTML = st.present
+    ? `<span class="state" style="color:#16a34a">● Cookies uploaded</span> — ${st.cookies} cookies, updated ${since(st.updated)}${st.expires ? `, earliest expiry ${since(st.expires)}` : ""}.`
+    : `<span class="state" style="color:var(--color-accent-700)">● No cookies</span> — YouTube links will likely be blocked on this server.`;
+}
+$("ytCookiesFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  const fd = new FormData(); fd.append("file", f);
+  try { renderCookies(await api("/admin/youtube-cookies", { method: "POST", body: fd })); toast("YouTube cookies saved — try a YouTube link now"); }
+  catch (err) { toast(err.message); }
+});
+$("ytCookiesDel").onclick = async () => {
+  if (!confirm("Remove the YouTube cookies from this server?")) return;
+  try { renderCookies(await api("/admin/youtube-cookies", { method: "DELETE" })); toast("Cookies removed"); } catch (err) { toast(err.message); }
+};
 function deviceName(ua = "") {
   const b = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
   const o = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iPhone / iPad" : /Mac OS/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "";

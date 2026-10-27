@@ -1,0 +1,64 @@
+name: Test and deploy
+
+# Every push to main: run the tests, and only if they pass, ship the code to the EC2 server.
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   EC2_HOST         server IP or hostname
+#   EC2_USER         deploy            (limited user: can only run the update script)
+#   EC2_SSH_KEY      private key for that user (a dedicated CI key, not your personal .pem)
+#   EC2_KNOWN_HOSTS  the server's SSH host key line(s) — pins the server against impersonation
+# Optional repository variable: SITE_URL (default https://clip.anshu.tech)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -r requirements.txt pytest mongomock
+      - name: Tests
+        run: python -m pytest -q tests
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build release
+        run: |
+          git rev-parse --short HEAD > REVISION
+          git archive --format=tar.gz -o release.tgz --add-file=REVISION HEAD
+      - name: Upload and switch (rolls back automatically if the new version doesn't start)
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+          HOST: ${{ secrets.EC2_HOST }}
+          DEPLOY_USER: ${{ secrets.EC2_USER }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          SSH_OPTS="-i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          scp $SSH_OPTS release.tgz "$DEPLOY_USER@$HOST:release.tgz"
+          ssh $SSH_OPTS "$DEPLOY_USER@$HOST" sudo /usr/local/sbin/clipforge-update
+          rm -f ~/.ssh/deploy_key
+      - name: Check the live site
+        run: |
+          URL="${{ vars.SITE_URL || 'https://clip.anshu.tech' }}"
+          curl -fsS -m 30 "$URL/auth/config"

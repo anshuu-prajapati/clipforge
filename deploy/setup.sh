@@ -57,4 +57,14 @@ caddy validate --config /etc/caddy/Caddyfile >/dev/null
 systemctl enable --now caddy >/dev/null
 systemctl reload caddy || systemctl restart caddy
 
+echo "== CI deploy user (GitHub Actions: upload a release + run the update script, nothing else)"
+echo "$DOMAIN" > /etc/clipforge-domain
+install -m 755 "$APP/deploy/update.sh" /usr/local/sbin/clipforge-update
+id deploy >/dev/null 2>&1 || useradd --create-home --shell /bin/bash deploy
+install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+touch /home/deploy/.ssh/authorized_keys && chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 600 /home/deploy/.ssh/authorized_keys
+echo "deploy ALL=(root) NOPASSWD: /usr/local/sbin/clipforge-update" > /etc/sudoers.d/clipforge-deploy
+chmod 440 /etc/sudoers.d/clipforge-deploy
+visudo -cf /etc/sudoers.d/clipforge-deploy >/dev/null
+
 echo "== done: https://$DOMAIN"

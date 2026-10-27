@@ -109,3 +109,36 @@ def test_downloads_are_owner_only(client, tmp_path):
     signup(member, "member@example.com")
     assert member.get(f"/jobs/{job['id']}/clips/clip_01/download").status_code == 404
     assert TestClient(server.app).get(f"/jobs/{job['id']}/clips/clip_01/download").status_code == 401
+
+
+def test_youtube_cookies_upload_is_owner_only(client, monkeypatch):
+    monkeypatch.delenv("YTDLP_COOKIES", raising=False)
+    signup(client, "owner@example.com")
+    good = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tabc123\n"
+    r = client.post("/admin/youtube-cookies", files={"file": ("cookies.txt", good.encode(), "text/plain")})
+    assert r.status_code == 200 and r.json()["present"] and r.json()["cookies"] == 1
+    assert server.os.environ["YTDLP_COOKIES"] == str(server._cookies_path())
+    assert client.get("/settings").json()["youtube_cookies"]["present"] is True
+    bad = client.post("/admin/youtube-cookies", files={"file": ("x.txt", b"hello world", "text/plain")})
+    assert bad.status_code == 400
+    member = TestClient(server.app)
+    signup(member, "member@example.com")
+    assert member.get("/settings").json()["youtube_cookies"] is None
+    assert member.post("/admin/youtube-cookies", files={"file": ("c.txt", good.encode(), "text/plain")}).status_code == 403
+    assert "abc123" not in client.get("/admin/youtube-cookies").text           # contents never sent back
+    assert client.delete("/admin/youtube-cookies").json() == {"present": False}
+    assert "YTDLP_COOKIES" not in server.os.environ
+
+
+def test_youtube_bot_check_gives_a_clear_message(tmp_path, monkeypatch):
+    from clipforge import media
+    def blocked(cmd, cwd=None):
+        raise media.ClipforgeError("ffmpeg_failed", "ERROR: [youtube] x: Sign in to confirm you’re not a bot.")
+    monkeypatch.setattr(media, "run", blocked)
+    monkeypatch.delenv("YTDLP_COOKIES", raising=False)
+    try:
+        media.fetch("https://www.youtube.com/watch?v=x", tmp_path)
+    except media.ClipforgeError as e:
+        assert e.code == "youtube_blocked" and "cookies in Settings" in str(e) and "upload the file" in str(e)
+    else:
+        raise AssertionError("expected youtube_blocked")

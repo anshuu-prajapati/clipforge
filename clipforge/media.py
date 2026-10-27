@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -70,8 +71,25 @@ def fetch(source: str, work: Path) -> Path:
     else:
         raise ClipforgeError("bad_link", "Install yt-dlp to use links, or pass a local file.")
     out = work / "source.%(ext)s"
-    run([*ytdlp, "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4",
-         "-o", str(out), source])
+    cmd = [*ytdlp, "-f", "bv*[height<=1080]+ba/b[height<=1080]/b", "--merge-output-format", "mp4",
+           "--no-warnings", "-o", str(out)]
+    cookies = os.environ.get("YTDLP_COOKIES")    # YouTube blocks cloud servers without a logged-in session
+    if cookies and Path(cookies).is_file():
+        cmd += ["--cookies", cookies]
+    try:
+        run([*cmd, source])
+    except ClipforgeError as e:
+        msg = str(e)
+        if "confirm you" in msg and "not a bot" in msg:
+            raise ClipforgeError("youtube_blocked",
+                                 "YouTube blocked this server's download (it asks cloud servers to sign in). "
+                                 + ("The uploaded YouTube cookies have expired — upload fresh ones in Settings. "
+                                    if cookies else "The owner can upload YouTube cookies in Settings to fix this. ")
+                                 + "Meanwhile, download the video and upload the file instead.") from None
+        if "Private video" in msg or "Video unavailable" in msg or "members-only" in msg.lower():
+            raise ClipforgeError("bad_link", "That video is private, removed or members-only.") from None
+        lines = [ln for ln in msg.splitlines() if ln.startswith("ERROR")]
+        raise ClipforgeError("bad_link", "Couldn't download that link: " + (lines[-1][7:] if lines else msg[-300:])) from None
     files = sorted(work.glob("source.*"))
     if not files:
         raise ClipforgeError("bad_link", "Download produced no file.")
