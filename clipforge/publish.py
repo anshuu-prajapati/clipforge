@@ -14,6 +14,7 @@ Instagram Instagram API with Instagram Login (token "IGAA…", graph.instagram.c
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 from datetime import datetime, timezone
@@ -170,7 +171,7 @@ def _ig(method: str, url: str, **kw) -> dict:
     if r.status_code >= 400 or "error" in d:
         err = d.get("error", {})
         msg = err.get("error_user_msg") or err.get("message") or str(d)[:300]
-        if "version" in msg.lower() and "deprecated" in msg.lower():
+        if err.get("code") == 2635 or re.search(r"version v?\d+\.\d+ (is|has been) deprecated", msg, re.I):
             msg += " — set INSTAGRAM_API_VERSION in .env to a current Graph API version."
         raise PublishError(f"Instagram: {msg}")
     return d

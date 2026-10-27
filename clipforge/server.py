@@ -1177,7 +1177,8 @@ def _cookies_status() -> dict:
         return {"present": False}
     text = p.read_text(encoding="utf-8", errors="replace")
     rows = [ln.split("\t") for ln in text.splitlines() if ln.strip() and not ln.startswith("#") and ln.count("\t") >= 6]
-    expiries = [int(r[4]) for r in rows if r[4].isdigit() and int(r[4]) > 0 and "youtube" in r[0]]
+    login = {"SID", "__Secure-1PSID", "__Secure-3PSID", "LOGIN_INFO", "SAPISID", "__Secure-3PAPISID"}
+    expiries = [int(r[4]) for r in rows if r[4].isdigit() and int(r[4]) > 0 and r[5] in login]   # the sign-in cookies
     return {"present": True, "updated": p.stat().st_mtime, "cookies": len(rows),
             "expires": min(expiries) if expiries else None}
 

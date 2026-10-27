@@ -142,3 +142,19 @@ def test_youtube_bot_check_gives_a_clear_message(tmp_path, monkeypatch):
         assert e.code == "youtube_blocked" and "cookies in Settings" in str(e) and "upload the file" in str(e)
     else:
         raise AssertionError("expected youtube_blocked")
+
+
+def test_facebook_user_id_in_instagram_field_gets_a_clear_message(monkeypatch):
+    from clipforge import accounts, connections
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("CLIPFORGE_SECRET_KEY", Fernet.generate_key().decode())
+    def fb(method, url, **kw):
+        raise accounts.PublishError("Instagram: (#12) username field is deprecated for versions v2.0 and higher")
+    monkeypatch.setattr(accounts, "_ig", fb)
+    acct = {"access_token": connections.seal("EAA-test-token"), "ext_id": "122133374421278383"}
+    try:
+        accounts.verify_instagram(acct)
+    except accounts.PublishError as e:
+        assert "isn't an Instagram account ID" in str(e) and "1784" in str(e) and "INSTAGRAM_API_VERSION" not in str(e)
+    else:
+        raise AssertionError("expected a clear error")

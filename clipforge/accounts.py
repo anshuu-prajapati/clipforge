@@ -95,7 +95,14 @@ def verify_instagram(acct: dict) -> dict:
             raise PublishError("No Instagram account is linked to a Facebook Page this token can see — "
                                "enter the Instagram account ID, or link the account to your Page.")
         uid = linked[0]["id"]
-    d = _ig("GET", f"{_ig_base(token)}/{uid}", params={"fields": "username", "access_token": token})
+    try:
+        d = _ig("GET", f"{_ig_base(token)}/{uid}", params={"fields": "username", "access_token": token})
+    except PublishError as e:
+        if acct.get("ext_id") and ("(#12)" in str(e) or "(#100)" in str(e) or "does not exist" in str(e)):
+            raise PublishError(f"{uid} isn't an Instagram account ID (it looks like a Facebook user or Page ID). "
+                               "Leave the Instagram account ID empty — ClipForge finds it — or use the ID "
+                               "that starts with 1784.") from None
+        raise
     return {"ext_id": uid, "name": "@" + d.get("username", "?"), "kind": "facebook_login"}
 
 

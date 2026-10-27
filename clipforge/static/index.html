@@ -1632,7 +1632,7 @@ function renderCookies(st) {
   if (!st) return;
   $("ytCookiesDel").classList.toggle("hidden", !st.present);
   $("ytCookiesState").innerHTML = st.present
-    ? `<span class="state" style="color:#16a34a">● Cookies uploaded</span> — ${st.cookies} cookies, updated ${since(st.updated)}${st.expires ? `, earliest expiry ${since(st.expires)}` : ""}.`
+    ? `<span class="state" style="color:#16a34a">● Cookies uploaded</span> — ${st.cookies} cookies, updated ${since(st.updated)}${st.expires ? `, YouTube login valid until about ${since(st.expires)}` : ""}.`
     : `<span class="state" style="color:var(--color-accent-700)">● No cookies</span> — YouTube links will likely be blocked on this server.`;
 }
 $("ytCookiesFile").addEventListener("change", async (e) => {
