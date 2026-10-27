@@ -68,6 +68,7 @@ def main(argv=None) -> int:
     sub.add_parser("template", help="print the default brand template JSON")
     s = sub.add_parser("serve", help="start the HTTP API")
     s.add_argument("--port", type=int, default=8000)
+    s.add_argument("--host", default="0.0.0.0", help="127.0.0.1 when running behind a reverse proxy (Caddy/nginx)")
 
     sub.add_parser("accounts", help="show connected YouTube / Instagram accounts")
     c = sub.add_parser("connect", help="connect a platform account")
@@ -121,7 +122,8 @@ def main(argv=None) -> int:
             print("  Email        " + (f"SMTP {os.environ['SMTP_HOST']}" if mailer.configured()
                                       else "off — password-reset links are printed here (add SMTP_HOST to .env)"))
             print(f"  Dashboard    http://localhost:{a.port}\n", flush=True)
-            uvicorn.run("clipforge.server:app", host="0.0.0.0", port=a.port)
+            uvicorn.run("clipforge.server:app", host=a.host, port=a.port, proxy_headers=True,
+                        forwarded_allow_ips="127.0.0.1")   # trust X-Forwarded-* only from a local proxy
         elif a.cmd == "accounts":
             from .publish import accounts
             for name, st in accounts().items():
