@@ -317,6 +317,7 @@
     <span class="nav-links" style="display:flex;gap:28px">
       <a href="#how" data-scroll="how">How it works</a>
       <a href="#projects" data-scroll="projects" id="navProjects" class="hidden">Projects</a>
+      <a href="#/auto">Auto-clip</a>
       <a href="#/brand">Brand style</a>
       <a href="#/settings">Settings</a>
     </span>
@@ -404,11 +405,34 @@
   <div class="nav-brand" data-go="home" style="margin-right:0"><i style="width:12px;height:20px"></i>ClipForge</div>
   <div class="stepper" id="stepper" style="display:flex;margin-right:auto;flex-wrap:wrap"></div>
   <a class="navlink" href="#/" id="navProj">Projects</a>
+  <a class="navlink" href="#/auto" id="navAuto">Auto-clip</a>
   <a class="navlink" href="#/brand" id="navBrand">Brand style</a>
   <a class="navlink" href="#/settings" id="navSettings">Settings</a>
   <button class="btn btn-secondary" data-go="home">New video</button>
   <button class="userchip" data-user type="button"></button>
 </nav>
+
+<!-- ============================================================ AUTO-CLIP -->
+<section id="auto" class="hidden wrap" style="padding-top:32px;padding-bottom:64px;display:flex;flex-direction:column;gap:24px">
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between;padding-bottom:20px;border-bottom:2px solid var(--color-text)">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <span class="eyebrow">Automations</span>
+      <h2 style="margin:0">Auto-clip channels</h2>
+      <span style="font-size:14px;color:var(--color-neutral-700);max-width:720px">Every new upload becomes clips automatically. From <b>your own channels</b> the best clips are also published for you; from other channels they wait in Projects for your review.</span>
+    </div>
+  </div>
+  <div class="setcard wide">
+    <h4>Watch a channel</h4>
+    <div class="urlbox" style="max-width:none">
+      <input id="wUrl" placeholder="https://www.youtube.com/@yourchannel" autocomplete="off">
+      <button class="btn btn-primary" id="wAdd" style="padding:0 22px">Add channel</button>
+    </div>
+    <label class="check" style="font-size:13px"><input type="checkbox" id="wPerm">I have the creator's permission to clip this channel's videos (not needed for your own channels)</label>
+    <div class="err" id="wErr"></div>
+    <span style="font-size:12px;color:var(--color-neutral-700)">Checked every 15 minutes. Only videos uploaded after you add a channel are used; Shorts are skipped; each new video waits 30 minutes so premieres can finish.</span>
+  </div>
+  <div id="wList" style="display:flex;flex-direction:column;gap:20px"></div>
+</section>
 
 <!-- ============================================================ SETTINGS -->
 <section id="settings" class="hidden wrap" style="padding-top:32px;padding-bottom:64px;display:flex;flex-direction:column;gap:28px">
@@ -771,13 +795,14 @@ function screen(name) {
   $("umenu").classList.add("hidden");
   $("landing").classList.toggle("hidden", name !== "landing");
   $("appNav").classList.toggle("hidden", name === "landing");
-  for (const s of ["processing", "results", "editor", "brand", "settings"]) $(s).classList.toggle("hidden", s !== name);
+  for (const s of ["processing", "results", "editor", "brand", "settings", "auto"]) $(s).classList.toggle("hidden", s !== name);
+  $("navAuto").classList.toggle("on", name === "auto");
   $("navSettings").classList.toggle("on", name === "settings");
   const el = $(name);
   if (el && screen.last !== name) { el.classList.remove("enter"); void el.offsetWidth; el.classList.add("enter"); }
   screen.last = name;
   const idx = { processing: 1, results: 2, editor: 3 }[name] || 0;
-  $("stepper").style.visibility = name === "brand" || name === "settings" ? "hidden" : "";
+  $("stepper").style.visibility = ["brand", "settings", "auto"].includes(name) ? "hidden" : "";
   $("stepper").innerHTML = ["Source", "Analyse", "Clips", "Edit"].map((l, i) =>
     `<span style="color:${i === idx ? "var(--color-accent)" : i < idx ? "var(--color-text)" : "var(--color-neutral-500)"};font-weight:${i === idx ? 800 : 500}">${String(i + 1).padStart(2, "0")} ${l}</span>`).join("");
   $("navBrand").classList.toggle("on", name === "brand");
@@ -796,6 +821,7 @@ async function route() {
   }
   if (hpath === "#/brand") { screen("brand"); return openBrand(); }
   if (hpath === "#/settings") { screen("settings"); return openSettings(); }
+  if (hpath === "#/auto") { screen("auto"); return openAuto(); }
   const [, id, clip, action] = location.hash.match(/^#\/job\/([\w]+)(?:\/(clip_\d+))?(?:\/(publish))?/) || [];
   if (!id) { store.set("cf.lastJob", null); screen("landing"); loadProjects(); return; }
   if (S.jobId !== id) Object.assign(S, { jobId: id, M: null, sel: new Set(), edits: {}, words: null });
@@ -1599,6 +1625,88 @@ async function renderBrandPreview() {
 addEventListener("beforeunload", (e) => { if (B.cur && JSON.stringify(B.cur) !== JSON.stringify(B.saved)) e.preventDefault(); });
 
 // ---------------------------------------------------------------- start
+// ---------------------------------------------------------------- auto-clip channels
+let A = { ws: [], accts: [] };
+async function openAuto() {
+  try { const [ws, acc] = await Promise.all([api("/watches"), api("/accounts")]); A = { ws, accts: acc.accounts }; }
+  catch (e) { toast(e.message); }
+  renderWatches();
+}
+function renderWatches() {
+  $("wList").innerHTML = A.ws.length ? A.ws.map(watchCard).join("")
+    : `<div class="setcard wide"><p style="margin:0">No channels yet. Add your own YouTube channel above — every new upload will be clipped and published for you.</p></div>`;
+}
+function watchCard(w) {
+  const sel = (name, opts, v) => `<select class="input" data-f="${name}" style="padding:8px 10px">${opts.map(([val, l]) => `<option value="${val}" ${String(v) === String(val) ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+  const num = (name, v, min, max) => `<input class="input" type="number" data-f="${name}" value="${v}" min="${min}" max="${max}" style="padding:8px 10px">`;
+  const accts = A.accts.map((a) => `<label class="check" style="font-size:13px"><input type="checkbox" data-wacct="${a.id}" ${w.accounts.includes(a.id) ? "checked" : ""} ${w.owned ? "" : "disabled"}>
+      ${ICONS[a.platform].replace(/width="44" height="44"/, 'width="18" height="18"')} ${esc(a.name || "")}</label>`).join("")
+    || `<small>No accounts yet — add them in <a href="#/settings">Settings</a>.</small>`;
+  const recent = w.recent.map((j) => `<div class="arow" style="grid-template-columns:auto 1fr"><i class="dot ${j.state === "failed" ? "bad" : ""}"></i>
+      <div style="min-width:0"><b><a href="#/job/${j.id}" style="color:inherit">${esc(j.title || "Video")}</a></b><div class="meta">
+        <span>${j.state === "done" ? `${j.clips} clips` : j.state === "failed" ? esc(j.error?.message?.slice(0, 120) || "failed") : "processing…"}</span>
+        ${j.auto?.published ? `<span class="tag tag-accent">${j.auto.published} auto-published</span>` : ""}
+        ${j.auto?.skipped ? `<span>${esc(j.auto.skipped)}</span>` : ""}<span>${ago(j.created)}</span></div></div></div>`).join("")
+    || `<small style="color:var(--color-neutral-700)">No new videos since you added it.</small>`;
+  return `<div class="setcard wide" data-w="${w.id}">
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      ${ICONS.youtube}<div style="flex:1;min-width:200px"><h4><a href="${esc(w.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(w.title || w.channel_id)}</a></h4>
+        <span style="font-size:13px;color:var(--color-neutral-700)">${w.owned ? '<span class="tag tag-accent">Your channel</span>' : '<span class="tag tag-neutral">Other creator · review before posting</span>'}
+          · checked ${w.last_check ? ago(w.last_check) : "never"}${w.last_error ? ` · <span style="color:var(--color-accent-700)">${esc(w.last_error)}</span>` : ""}</span></div>
+      <label class="tgl" style="min-width:150px">Watching<input type="checkbox" data-f="enabled" ${w.enabled ? "checked" : ""}><b></b></label>
+    </div>
+    <div class="grp" style="border:0"><div class="fields" style="padding:0">
+      <div class="bf"><label>Clip length</label>${sel("length", LENGTHS.filter(([v]) => v !== "custom"), w.length)}</div>
+      <div class="bf"><label>Clips to make</label>${num("max_clips", w.max_clips, 1, 12)}</div>
+      <div class="bf"><label>${w.owned ? "Auto-publish" : "Auto-publish (your channels only)"}</label>
+        <label class="tgl">Post the best clips<input type="checkbox" data-f="auto_publish" ${w.auto_publish ? "checked" : ""} ${w.owned ? "" : "disabled"}><b></b></label></div>
+      <div class="bf"><label>Post the top</label>${num("post_count", w.post_count, 1, 12)}</div>
+      <div class="bf"><label>Minimum score</label>${num("min_score", w.min_score, 0, 100)}</div>
+      <div class="bf"><label>Space posts</label>${sel("every_hours", [[0, "all at once"], [1, "every hour"], [3, "every 3 h"], [6, "every 6 h"], [12, "every 12 h"], [24, "one a day"]], w.every_hours)}</div>
+      <div class="bf"><label>YouTube visibility</label>${sel("privacy", [["public", "Public"], ["unlisted", "Unlisted"], ["private", "Private"]], w.privacy)}</div>
+    </div></div>
+    <div class="bf"><label>Publish to</label><div style="display:flex;gap:16px;flex-wrap:wrap">${accts}</div></div>
+    <div><h6 style="margin:6px 0">Recent videos</h6>${recent}</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-primary" data-wsave>Save</button>
+      <button class="btn btn-secondary" data-wcheck>Check now</button><button class="btn btn-ghost" data-wdel>Remove</button></div>
+  </div>`;
+}
+$("wAdd").onclick = async () => {
+  $("wErr").textContent = ""; $("wAdd").disabled = true; $("wAdd").textContent = "Checking…";
+  try {
+    const w = await api("/watches", { method: "POST", headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ url: $("wUrl").value, permission: $("wPerm").checked }) });
+    $("wUrl").value = ""; $("wPerm").checked = false;
+    toast(`Watching ${w.title}${w.owned ? " — new uploads will be clipped and published" : " — new uploads will be clipped for review"}`);
+    openAuto();
+  } catch (err) { $("wErr").textContent = err.message; }
+  $("wAdd").disabled = false; $("wAdd").textContent = "Add channel";
+};
+$("wUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") $("wAdd").click(); });
+$("wList").addEventListener("click", async (e) => {
+  const card = e.target.closest("[data-w]"); if (!card) return;
+  const id = card.dataset.w, w = A.ws.find((x) => x.id === id);
+  try {
+    if (e.target.closest("[data-wsave]")) {
+      const body = { accounts: $$(`[data-w="${id}"] [data-wacct]:checked`).map((x) => x.dataset.wacct) };
+      card.querySelectorAll("[data-f]").forEach((el) => {
+        const f = el.dataset.f;
+        body[f] = el.type === "checkbox" ? el.checked : el.type === "number" || f === "every_hours" ? Number(el.value) : el.value;
+      });
+      await api(`/watches/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      toast("Saved"); openAuto();
+    } else if (e.target.closest("[data-wcheck]")) {
+      e.target.textContent = "Checking…";
+      const r = await api(`/watches/${id}/check`, { method: "POST" });
+      toast(r.created.length ? `${r.created.length} new video${r.created.length > 1 ? "s" : ""} — clipping started` : "No new videos yet");
+      openAuto();
+    } else if (e.target.closest("[data-wdel]")) {
+      if (!confirm(`Stop watching ${w.title}? Projects already made stay in Projects.`)) return;
+      await api(`/watches/${id}`, { method: "DELETE" }); toast("Removed"); openAuto();
+    }
+  } catch (err) { toast(err.message); openAuto(); }
+});
+
 // ---------------------------------------------------------------- settings
 const ICONS = {
   youtube: `<svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true"><rect width="44" height="44" fill="#FF0033"/><path d="M17 14l13 8-13 8z" fill="#fff"/></svg>`,
@@ -1823,7 +1931,7 @@ let AUTH = { mode: "login", config: {} };
 
 function showAuth() {
   S.user = null;
-  for (const id of ["landing", "appNav", "processing", "results", "editor", "brand", "settings"]) $(id).classList.add("hidden");
+  for (const id of ["landing", "appNav", "processing", "results", "editor", "brand", "settings", "auto"]) $(id).classList.add("hidden");
   $("umenu").classList.add("hidden");
   $("authView").classList.remove("hidden");
   setAuthMode(AUTH.config.first_user ? "signup" : AUTH.mode === "signup" ? "signup" : "login");

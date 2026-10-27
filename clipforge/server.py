@@ -434,8 +434,14 @@ def _work(job_id: str) -> None:
             _set(job_id, state="done", clips=len(m["clips"]), elapsed_s=m["elapsed_s"], duration=dur or m["duration"])
         except ClipforgeError as e:
             _set(job_id, state="failed", error={"code": e.code, "message": str(e)})
+            return
         except Exception as e:  # noqa: BLE001
             _set(job_id, state="failed", error={"code": "error", "message": str(e)})
+            return
+    try:
+        _after_job(job_id)                         # automations: auto-publish the best clips
+    except Exception as e:  # noqa: BLE001
+        _set(job_id, **{"auto.skipped": f"Auto-publish failed: {str(e)[:200]}"})
 
 
 @app.on_event("startup")
@@ -456,6 +462,7 @@ def _startup() -> None:
                     _set(j["_id"], **{f"publish.{clip}.{platform}.state": "failed",
                                       f"publish.{clip}.{platform}.error": "Interrupted by a server restart — publish again."})
     threading.Thread(target=_scheduler, daemon=True).start()
+    threading.Thread(target=_watcher, daemon=True).start()          # automations: new uploads → clips
 
 
 @app.get("/", include_in_schema=False)
@@ -1013,14 +1020,21 @@ def publish_clips(job_id: str, req: PublishReq, user: User):
     if req.post and len(req.clips) == 1:       # keep edits so the dialog shows them next time
         _set(job_id, **{f"social.{req.clips[0]}.{k}.{f}": v for k in ("youtube", "instagram")
                         for f, v in (req.post.get(k) or {}).items()})
+    return {"queued": _queue_publish(job_id, user["_id"], req.clips, [mine[a] for a in req.accounts], req.privacy,
+                                     req.start_at, req.every_hours, req.post if len(req.clips) == 1 else None)}
+
+
+def _queue_publish(job_id: str, user_id: str, clips: list[str], accts: list[dict], privacy: str,
+                   start_at: Optional[float], every_hours: float, post: Optional[dict] = None) -> list[dict]:
+    """Queue clips → accounts; clip i goes out at start + i·every_hours (used by Publish and automations)."""
     now = time.time()
     queued = []
-    for i, cid in enumerate(req.clips):
-        at = (req.start_at or now) + i * req.every_hours * 3600
-        for aid in req.accounts:
-            a = mine[aid]
+    for i, cid in enumerate(clips):
+        at = (start_at or now) + i * every_hours * 3600
+        for a in accts:
+            aid = a["id"]
             meta = {"platform": a["platform"], "account": a.get("label") or a.get("name")}
-            opts = {"privacy": req.privacy, "post": req.post if len(req.clips) == 1 else None}
+            opts = {"privacy": privacy, "post": post}
             if at <= now + 60:
                 _set_status(job_id, cid, aid, state="queued", pct=0, error=None, at=None, **meta)
                 threading.Thread(target=_publish_one, args=(job_id, cid, aid, opts), daemon=True).start()
@@ -1029,11 +1043,223 @@ def publish_clips(job_id: str, req: PublishReq, user: User):
                 _set_status(job_id, cid, aid, state="queued", pct=0, error=None, at=at, **meta)
                 threading.Thread(target=_publish_one, args=(job_id, cid, aid, opts), daemon=True).start()
             else:                               # Instagram: our scheduler posts at the time
-                db().schedule.insert_one({"job": job_id, "user_id": user["_id"], "clip": cid, "account": aid,
+                db().schedule.insert_one({"job": job_id, "user_id": user_id, "clip": cid, "account": aid,
                                           "platform": a["platform"], "at": at, "opts": opts})
                 _set_status(job_id, cid, aid, state="waiting", pct=0, error=None, at=at, **meta)
             queued.append({"clip": cid, "account": aid, "at": at})
-    return {"queued": queued}
+    return queued
+
+
+# =========================================================================== automations: watch channels
+WATCH_EVERY = int(os.environ.get("CLIPFORGE_WATCH_MINUTES", "15")) * 60
+WATCH_WAIT = 30 * 60                              # let premieres / YouTube processing finish first
+MAX_WATCHES = 20
+
+
+def _owned_channels(user: dict) -> set[str]:
+    """Channels proven to be the user's: the ones behind their connected YouTube accounts."""
+    return {a.get("ext_id") for a in _user_accounts(user) if a["platform"] == "youtube" and a.get("ext_id")}
+
+
+def _watch_view(w: dict, user: dict) -> dict:
+    out = public(w, ("seen", "user_id"))
+    out["owned"] = w["channel_id"] in _owned_channels(user)
+    out["recent"] = [public(j) for j in db().jobs.find({"user_id": user["_id"], "auto.watch": w["_id"]},
+                                                      {"title": 1, "state": 1, "created": 1, "clips": 1, "auto": 1,
+                                                       "error": 1}).sort("created", -1).limit(5)]
+    return out
+
+
+def _new_url_job(user: dict, url: str, title: str, length: str, max_clips: int, auto: Optional[dict] = None) -> str:
+    job_id = uuid.uuid4().hex[:12]
+    (ROOT / job_id).mkdir(parents=True)
+    tpl = _safe_template(user.get("brand"), user, strict=False)
+    db().jobs.insert_one({"_id": job_id, "user_id": user["_id"], "state": "queued", "steps": {}, "current": None,
+                          "source": url, "title": title or url, "origin": "YouTube", "length": length,
+                          "max_clips": max_clips, "created": time.time(), "auto": auto,
+                          "input": {"source": url, "length": length, "max_clips": max_clips,
+                                    "template": tpl.to_dict()}})
+    _start(job_id)
+    return job_id
+
+
+def _check_watch(w: dict) -> list[str]:
+    """Start a project for every new (non-Short) upload that is at least WATCH_WAIT old."""
+    from . import watch
+    user = db().users.find_one({"_id": w["user_id"]})
+    if not user:
+        return []
+    feed = watch.latest(w["channel_id"])
+    seen, now, created = set(w.get("seen", [])), time.time(), []
+    fresh = [v for v in feed["videos"] if v["id"] not in seen]
+    for v in sorted(fresh, key=lambda v: v["published"]):
+        if v["short"]:
+            seen.add(v["id"])                    # Shorts are already short — skip them for good
+            continue
+        if now - v["published"] < WATCH_WAIT:
+            continue                             # try again next round
+        auto = {"watch": w["_id"], "video": v["id"],
+                "publish": bool(w.get("auto_publish")) and w["channel_id"] in _owned_channels(user)}
+        created.append(_new_url_job(user, v["url"], v["title"], w.get("length", "auto"), w.get("max_clips", 6), auto))
+        seen.add(v["id"])
+    db().watches.update_one({"_id": w["_id"]}, {"$set": {
+        "seen": list(seen)[-200:], "title": feed["title"] or w.get("title"), "last_check": now, "last_error": None,
+        **({"last_video": created and fresh[-1]["title"]} if created else {})}})
+    return created
+
+
+def _watcher() -> None:
+    while True:
+        try:
+            for w in db().watches.find({"enabled": True}):
+                if time.time() - (w.get("last_check") or 0) < WATCH_EVERY - 30:
+                    continue
+                try:
+                    _check_watch(w)
+                except Exception as e:  # noqa: BLE001 - one bad channel mustn't stop the others
+                    db().watches.update_one({"_id": w["_id"]}, {"$set": {"last_check": time.time(),
+                                                                         "last_error": str(e)[:300]}})
+        except Exception:  # noqa: BLE001 - database hiccup: next round
+            pass
+        time.sleep(60)
+
+
+def _after_job(job_id: str) -> None:
+    """Automation projects from the user's own channel: publish the best clips right away, spaced out."""
+    job = db().jobs.find_one({"_id": job_id}, {"auto": 1, "user_id": 1, "manifest": 1})
+    auto = (job or {}).get("auto") or {}
+    if not auto.get("publish"):
+        return
+    w = db().watches.find_one({"_id": auto.get("watch")})
+    user = db().users.find_one({"_id": job["user_id"]})
+    if not w or not user or not w.get("enabled") or not w.get("auto_publish"):
+        return
+    if w["channel_id"] not in _owned_channels(user):   # re-checked at publish time
+        _set(job_id, **{"auto.skipped": "Channel is no longer one of your connected YouTube accounts."})
+        return
+    accts = [a for a in _user_accounts(user) if a["id"] in set(w.get("accounts") or []) and a.get("status") != "error"]
+    clips = sorted(job["manifest"]["clips"], key=lambda c: -c.get("score", 0))
+    picks = [c["id"] for c in clips if c.get("score", 0) >= w.get("min_score", 60)][: w.get("post_count", 3)]
+    if not accts or not picks:
+        _set(job_id, **{"auto.skipped": "No accounts selected." if not accts else "No clip reached the minimum score."})
+        return
+    queued = _queue_publish(job_id, user["_id"], picks, accts, w.get("privacy", "public"), None, w.get("every_hours", 6))
+    _set(job_id, **{"auto.published": len(picks), "auto.queued": len(queued)})
+
+
+class WatchReq(BaseModel):
+    url: Optional[str] = None
+    permission: bool = False
+    enabled: Optional[bool] = None
+    auto_publish: Optional[bool] = None
+    accounts: Optional[list[str]] = None
+    length: Optional[str] = None
+    max_clips: Optional[int] = None
+    post_count: Optional[int] = None
+    min_score: Optional[int] = None
+    every_hours: Optional[float] = None
+    privacy: Optional[str] = None
+
+
+def _watch_updates(req: WatchReq, user: dict, owned: bool) -> dict:
+    upd = {}
+    if req.enabled is not None:
+        upd["enabled"] = req.enabled
+    if req.auto_publish is not None:
+        if req.auto_publish and not owned:
+            raise HTTPException(400, "Auto-publishing only works for your own channels (add the channel in "
+                                     "Settings → YouTube first). Clips from other channels wait for your review.")
+        upd["auto_publish"] = req.auto_publish
+    if req.accounts is not None:
+        mine = {a["id"] for a in _user_accounts(user)}
+        upd["accounts"] = [a for a in req.accounts if a in mine]
+    if req.length is not None:
+        try:
+            parse_length(req.length)
+        except ClipforgeError as e:
+            raise HTTPException(400, str(e))
+        upd["length"] = req.length
+    for key, lo, hi in (("max_clips", 1, 12), ("post_count", 1, 12), ("min_score", 0, 100), ("every_hours", 0, 168)):
+        v = getattr(req, key)
+        if v is not None:
+            if not lo <= v <= hi:
+                raise HTTPException(400, f"{key} must be between {lo} and {hi}")
+            upd[key] = v
+    if req.privacy is not None:
+        if req.privacy not in ("public", "unlisted", "private"):
+            raise HTTPException(400, "privacy must be public, unlisted or private")
+        upd["privacy"] = req.privacy
+    return upd
+
+
+@app.get("/watches")
+def list_watches(user: User):
+    return [_watch_view(w, user) for w in db().watches.find({"user_id": user["_id"]}).sort("added", -1)]
+
+
+@app.post("/watches")
+def add_watch(req: WatchReq, user: User):
+    from . import watch
+    if not req.url:
+        raise HTTPException(400, "Paste a YouTube channel link.")
+    if db().watches.count_documents({"user_id": user["_id"]}) >= MAX_WATCHES:
+        raise HTTPException(400, f"You can watch up to {MAX_WATCHES} channels.")
+    try:
+        ch = watch.resolve(req.url)
+        feed = watch.latest(ch["id"])
+    except watch.WatchError as e:
+        raise HTTPException(400, str(e))
+    if db().watches.find_one({"user_id": user["_id"], "channel_id": ch["id"]}):
+        raise HTTPException(400, f"You're already watching {ch['title']}.")
+    owned = ch["id"] in _owned_channels(user)
+    if not owned and not req.permission:
+        raise HTTPException(400, "This isn't one of your channels. Tick the box confirming you have the creator's "
+                                 "permission to clip their videos.")
+    defaults = [a["id"] for a in _user_accounts(user) if a.get("default")]
+    w = {"_id": uuid.uuid4().hex[:12], "user_id": user["_id"], "channel_id": ch["id"], "title": ch["title"],
+         "url": f"https://www.youtube.com/channel/{ch['id']}", "added": time.time(), "enabled": True,
+         "auto_publish": owned, "accounts": defaults, "length": "auto", "max_clips": 6, "post_count": 3,
+         "min_score": 60, "every_hours": 6, "privacy": "public", "permission": bool(req.permission) or owned,
+         "seen": [v["id"] for v in feed["videos"]],           # only videos from now on — no backlog
+         "last_check": time.time(), "last_error": None}
+    w.update(_watch_updates(req.model_copy(update={"url": None}), user, owned))
+    db().watches.insert_one(w)
+    return _watch_view(w, user)
+
+
+def _my_watch(watch_id: str, user: dict) -> dict:
+    w = db().watches.find_one({"_id": watch_id, "user_id": user["_id"]})
+    if not w:
+        raise HTTPException(404, "Channel not found.")
+    return w
+
+
+@app.patch("/watches/{watch_id}")
+def edit_watch(watch_id: str, req: WatchReq, user: User):
+    w = _my_watch(watch_id, user)
+    upd = _watch_updates(req, user, w["channel_id"] in _owned_channels(user))
+    if upd:
+        db().watches.update_one({"_id": watch_id}, {"$set": upd})
+    return _watch_view({**w, **upd}, user)
+
+
+@app.post("/watches/{watch_id}/check")
+def check_watch_now(watch_id: str, user: User):
+    from . import watch
+    w = _my_watch(watch_id, user)
+    try:
+        created = _check_watch(w)
+    except watch.WatchError as e:
+        db().watches.update_one({"_id": watch_id}, {"$set": {"last_check": time.time(), "last_error": str(e)}})
+        raise HTTPException(400, str(e))
+    return {"created": created, "watch": _watch_view(db().watches.find_one({"_id": watch_id}), user)}
+
+
+@app.delete("/watches/{watch_id}")
+def remove_watch(watch_id: str, user: User):
+    _my_watch(watch_id, user)
+    db().watches.delete_one({"_id": watch_id})
+    return {"ok": True}
 
 
 # =========================================================================== connect accounts (OAuth)
@@ -1261,7 +1487,7 @@ def delete_account(req: DeleteReq, response: Response, user: User):
     if storage.enabled():
         storage.delete_folder(f"clipforge/{user['_id']}")
     shutil.rmtree(BRAND_ASSETS / user["_id"], ignore_errors=True)
-    for coll in ("jobs", "schedule", "sessions", "oauth_states"):
+    for coll in ("jobs", "schedule", "sessions", "oauth_states", "watches"):
         db()[coll].delete_many({"user_id": user["_id"]})
     db().users.delete_one({"_id": user["_id"]})
     response.delete_cookie(auth.COOKIE, path="/")
