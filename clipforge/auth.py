@@ -91,12 +91,13 @@ def create_user(email: str, password: str, name: str = "", code: str = "") -> di
     if problem := password_problem(password, email):
         raise AuthError(problem)
     first = db().users.estimated_document_count() == 0
-    if not first:
-        mode = signup_mode()
-        if mode == "closed":
-            raise AuthError("Sign-ups are closed. Ask the owner for an account.")
-        if mode == "code" and not hmac.compare_digest(code.strip(), os.environ["CLIPFORGE_SIGNUP_CODE"]):
-            raise AuthError("That invite code isn't right.")
+    mode = signup_mode()
+    # an invite code also guards the very first (owner) account — on a public server a stranger
+    # must never be able to claim ownership before you do
+    if mode == "code" and not hmac.compare_digest(code.strip(), os.environ["CLIPFORGE_SIGNUP_CODE"]):
+        raise AuthError("That invite code isn't right.")
+    if not first and mode == "closed":
+        raise AuthError("Sign-ups are closed. Ask the owner for an account.")
     if db().users.find_one({"email": email}):
         raise AuthError("An account with this email already exists — log in instead.")
     user = {"_id": uuid.uuid4().hex[:16], "email": email, "name": name.strip()[:60] or email.split("@")[0],

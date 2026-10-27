@@ -35,8 +35,9 @@ def test_signup_login_logout_and_roles(client):
 
 
 def test_invite_code_and_closed_signup(client, monkeypatch):
-    signup(client, "owner@example.com")
     monkeypatch.setenv("CLIPFORGE_SIGNUP_CODE", "letmein")
+    assert signup(TestClient(server.app), "stranger@example.com").status_code == 400   # nobody claims owner without it
+    assert signup(client, "owner@example.com", code="letmein").json()["role"] == "owner"
     assert signup(TestClient(server.app), "a@example.com", code="wrong").status_code == 400
     assert signup(TestClient(server.app), "a@example.com", code="letmein").status_code == 200
     monkeypatch.setenv("CLIPFORGE_SIGNUP", "closed")

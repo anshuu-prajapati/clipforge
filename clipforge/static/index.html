@@ -1798,7 +1798,7 @@ function setAuthMode(mode, extra = {}) {               // login | signup | forgo
   $("authTabs").classList.toggle("hidden", forgot || reset);
   $("aBack").classList.toggle("hidden", !(forgot || reset));
   $("fName").classList.toggle("hidden", !up);
-  $("fCode").classList.toggle("hidden", !(up && cfg.signup === "code" && !cfg.first_user));
+  $("fCode").classList.toggle("hidden", !(up && cfg.signup === "code"));   // also for the first (owner) account
   $("fEmail").classList.toggle("hidden", reset);
   $("fPass").classList.toggle("hidden", forgot);
   $("fPass2").classList.toggle("hidden", !reset);
