@@ -23,7 +23,8 @@ def db():
         raise DatabaseError("Add MONGODB_URI=… to .env (your MongoDB connection string)")
     try:
         client = MongoClient(uri, serverSelectionTimeoutMS=8000, appname="clipforge")
-        d = client.get_default_database(default=os.environ.get("MONGODB_DB", "clipforge"))
+        name = os.environ.get("MONGODB_DB")       # explicit name wins over one in the URI (e.g. a live/test split)
+        d = client[name] if name else client.get_default_database(default="clipforge")
         d.users.create_index("email", unique=True)
         d.sessions.create_index("token", unique=True)
         d.sessions.create_index("expires", expireAfterSeconds=0)      # MongoDB deletes expired sessions

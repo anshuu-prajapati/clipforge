@@ -1,0 +1,30 @@
+[Unit]
+Description=ClipForge dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=clipforge
+Group=clipforge
+WorkingDirectory=/var/lib/clipforge
+Environment=PYTHONPATH=/opt/clipforge
+Environment=CLIPFORGE_ENV_FILE=/var/lib/clipforge/.env
+Environment=CLIPFORGE_DATA=/var/lib/clipforge/jobs
+Environment=HOME=/var/lib/clipforge
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_HUB_DISABLE_SYMLINKS_WARNING=1
+# only reachable through Caddy on this machine
+ExecStart=/opt/clipforge/.venv/bin/python -m clipforge serve --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+# hardening: read-only system, writable data folder only
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/clipforge
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+# Caddy gets and renews the HTTPS certificate for this domain automatically.
+__DOMAIN__ {
+	encode zstd gzip
+	request_body {
+		max_size 4GB
+	}
+	reverse_proxy 127.0.0.1:8000 {
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+	log {
+		output file /var/log/caddy/clipforge.log
+	}
+}
