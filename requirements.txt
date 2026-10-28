@@ -12,6 +12,7 @@ deno>=2.5         # JavaScript runtime yt-dlp uses for those challenges (install
 google-api-python-client
 google-auth-oauthlib
 httpx
+pillow            # carousel slides
 # accounts + storage for the dashboard
 pymongo>=4.6
 cloudinary

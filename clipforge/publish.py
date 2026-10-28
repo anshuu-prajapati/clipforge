@@ -299,6 +299,42 @@ def instagram_publish_url(token: str, ig_user_id: str, video_url: str, caption: 
     return {"id": m["id"], "url": link}
 
 
+def instagram_carousel(token: str, ig_user_id: str, image_urls: list[str], caption: str,
+                       progress: Progress = lambda s, p: None) -> dict:
+    """Image post (1 image) or carousel (2-10). Instagram downloads each JPEG from a public URL; works with
+    both Instagram-Login and Facebook-Login tokens."""
+    if not 1 <= len(image_urls) <= 10:
+        raise PublishError("A carousel has 1 to 10 slides.")
+    base = _ig_base(token)
+    if len(image_urls) == 1:
+        cid = _ig("POST", f"{base}/{ig_user_id}/media",
+                  data={"image_url": image_urls[0], "caption": caption[:2200], "access_token": token})["id"]
+    else:
+        children = []
+        for k, url in enumerate(image_urls):
+            progress(f"sending slide {k + 1} of {len(image_urls)}", 0.05 + 0.6 * k / len(image_urls))
+            children.append(_ig("POST", f"{base}/{ig_user_id}/media",
+                                data={"image_url": url, "is_carousel_item": "true", "access_token": token})["id"])
+        progress("building the carousel", 0.7)
+        cid = _ig("POST", f"{base}/{ig_user_id}/media",
+                  data={"media_type": "CAROUSEL", "children": ",".join(children), "caption": caption[:2200],
+                        "access_token": token})["id"]
+    for i in range(60):                           # images are usually ready at once
+        st = _ig("GET", f"{base}/{cid}", params={"fields": "status_code,status", "access_token": token})
+        if st.get("status_code") in (None, "FINISHED"):
+            break
+        if st.get("status_code") in ("ERROR", "EXPIRED"):
+            raise PublishError(f"Instagram could not process the post: {st.get('status')}")
+        progress("Instagram is processing the post", 0.75 + min(0.15, i / 40))
+        time.sleep(3)
+    else:
+        raise PublishError("Instagram took too long to process the post.")
+    progress("publishing", 0.95)
+    m = _ig("POST", f"{base}/{ig_user_id}/media_publish", data={"creation_id": cid, "access_token": token})
+    link = _ig("GET", f"{base}/{m['id']}", params={"fields": "permalink", "access_token": token}).get("permalink")
+    return {"id": m["id"], "url": link}
+
+
 # =========================================================================== status
 def accounts() -> dict:
     """Connection status for the dashboard (never returns secrets)."""

@@ -268,8 +268,46 @@
     .nav-links { display: none !important; }
     .pct { font-size: 64px; }
     .stepper { display: none !important; }
+    #appNav { flex-wrap: wrap; gap: 8px 18px !important; padding: 10px 16px !important; }
+    #appNav .navlink { white-space: nowrap; font-size: 13px; }
+    #appNav > .btn { display: none; }
+    #appNav > .nav-brand { flex: 1; }
+    #appNav > .userchip { order: 1; }
+    #appNav::after { content: ""; order: 1; flex-basis: 100%; height: 0; }   /* links start a new row */
+    #appNav > .navlink { order: 2; }
+    #appNav > .navlink:first-of-type { margin-left: 0; }
     .how > div { padding-left: 0; border-right: 0; border-bottom: 2px solid var(--color-divider); }
   }
+  /* posts (carousels) */
+  .po-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 20px; }
+  .po-card { border: 2px solid var(--color-text); background: var(--color-bg); cursor: pointer; display: flex; flex-direction: column; text-align: left; padding: 0; font: inherit; color: inherit; transition: transform .15s; }
+  .po-card:hover { transform: translateY(-3px); }
+  .po-thumb { aspect-ratio: 4 / 5; width: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; border-bottom: 2px solid var(--color-text); background: var(--color-neutral-100); font-size: 13px; color: var(--color-neutral-700); padding: 16px; text-align: center; }
+  img.po-thumb { padding: 0; }
+  .po-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .po-body b { font-size: 15px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .po-body small { color: var(--color-neutral-700); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .po-body .tag { padding: 1px 6px; font-size: 10px; }
+  .po-strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; scroll-snap-type: x mandatory; }
+  .po-strip img { width: 232px; aspect-ratio: 4 / 5; border: 2px solid var(--color-text); scroll-snap-align: start; flex: none; display: block; }
+  .po-edit { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  @media (max-width: 860px) { .po-edit { grid-template-columns: 1fr; } .po-strip img { width: 200px; } }
+  .po-slide { border: 2px solid var(--color-text); padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--color-bg); }
+  .po-slide header { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--color-neutral-700); }
+  .po-slide textarea.input { min-height: 64px; }
+  .po-photo { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .po-photo img { width: 56px; height: 70px; object-fit: cover; border: 2px solid var(--color-text); display: block; }
+  .po-photo small { color: var(--color-neutral-700); flex: 1; min-width: 120px; }
+  .po-photo small a { color: inherit; }
+  .po-find { display: flex; flex-direction: column; gap: 10px; border-top: 2px dashed var(--color-neutral-300); padding-top: 10px; }
+  .po-find .row { display: flex; gap: 8px; }
+  .po-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+  .po-results button { padding: 0; border: 2px solid transparent; background: var(--color-neutral-100); cursor: pointer; aspect-ratio: 4 / 5; }
+  .po-results button:hover { border-color: var(--color-accent); }
+  .po-results img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .po-writing { display: flex; gap: 12px; align-items: center; font-weight: 600; }
+  .po-writing i { width: 14px; height: 14px; background: var(--color-accent); animation: po-pulse 1s infinite alternate; }
+  @keyframes po-pulse { from { opacity: .25; transform: scale(.8); } to { opacity: 1; transform: scale(1); } }
 </style>
 </head>
 <body>
@@ -317,6 +355,7 @@
     <span class="nav-links" style="display:flex;gap:28px">
       <a href="#how" data-scroll="how">How it works</a>
       <a href="#projects" data-scroll="projects" id="navProjects" class="hidden">Projects</a>
+      <a href="#/posts">Posts</a>
       <a href="#/auto">Auto-clip</a>
       <a href="#/brand">Brand style</a>
       <a href="#/settings">Settings</a>
@@ -405,6 +444,7 @@
   <div class="nav-brand" data-go="home" style="margin-right:0"><i style="width:12px;height:20px"></i>ClipForge</div>
   <div class="stepper" id="stepper" style="display:flex;margin-right:auto;flex-wrap:wrap"></div>
   <a class="navlink" href="#/" id="navProj">Projects</a>
+  <a class="navlink" href="#/posts" id="navPosts">Posts</a>
   <a class="navlink" href="#/auto" id="navAuto">Auto-clip</a>
   <a class="navlink" href="#/brand" id="navBrand">Brand style</a>
   <a class="navlink" href="#/settings" id="navSettings">Settings</a>
@@ -432,6 +472,37 @@
     <span style="font-size:12px;color:var(--color-neutral-700)">Checked every 15 minutes. Only videos uploaded after you add a channel are used; Shorts are skipped; each new video waits 30 minutes so premieres can finish.</span>
   </div>
   <div id="wList" style="display:flex;flex-direction:column;gap:20px"></div>
+</section>
+
+<!-- ============================================================ POSTS -->
+<section id="posts" class="hidden wrap" style="padding-top:32px;padding-bottom:64px;display:flex;flex-direction:column;gap:24px">
+  <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between;padding-bottom:20px;border-bottom:2px solid var(--color-text)">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <span class="eyebrow">Posts</span>
+      <h2 style="margin:0">Carousel posts</h2>
+      <span style="font-size:14px;color:var(--color-neutral-700);max-width:720px">Describe a post or pick one of your videos — Claude writes the slides, ClipForge draws them in your brand colors, and you post them to Instagram now or later.</span>
+    </div>
+  </div>
+  <div id="pHome" style="display:flex;flex-direction:column;gap:24px">
+    <div class="setcard wide">
+      <h4>Create a post</h4>
+      <textarea class="input" id="pPrompt" rows="3" placeholder="e.g. 5 editing mistakes that kill your Shorts — for beginner creators, practical and specific"></textarea>
+      <div class="grp" style="border:0"><div class="fields" style="padding:0">
+        <div class="bf"><label for="pJob">Or turn a video into a post</label><select class="input" id="pJob" style="padding:8px 10px"><option value="">— use the prompt —</option></select></div>
+        <div class="bf"><label for="pSlides">Slides</label><select class="input" id="pSlides" style="padding:8px 10px"></select></div>
+        <div class="bf"><label>Look</label><div class="seg" id="pTheme"></div></div>
+        <div class="bf"><label for="pHandle">Handle on the slides</label><input class="input" id="pHandle" placeholder="@yourhandle" maxlength="31" style="padding:8px 10px"></div>
+        <div class="bf"><label>Photos</label><label class="tgl" id="pImagesWrap">Add photos from the web<input type="checkbox" id="pImages"><b></b></label>
+          <small id="pImagesHint" style="color:var(--color-neutral-700);font-size:12px">Free stock photos (Pixabay), picked to match each slide. You can swap or upload your own after.</small></div>
+      </div></div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" id="pMake">Write it with Claude</button>
+        <span class="err" id="pErr"></span>
+      </div>
+    </div>
+    <div class="po-grid" id="pList"></div>
+  </div>
+  <div id="pEdit" class="hidden" style="display:flex;flex-direction:column;gap:20px"></div>
 </section>
 
 <!-- ============================================================ SETTINGS -->
@@ -559,6 +630,9 @@
     <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
       <div class="seg ratioSeg"></div>
       <button class="btn btn-secondary" id="toggleAll">Select all</button>
+      <button class="btn btn-secondary" id="makePost" title="Claude turns this video's best ideas into an Instagram carousel">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="16"/><path d="M19 6v12M22 8v8"/></svg>
+        Carousel</button>
       <button class="btn btn-secondary" id="publishSel" disabled>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
         <span id="publishSelLbl">Publish</span>
@@ -795,14 +869,15 @@ function screen(name) {
   $("umenu").classList.add("hidden");
   $("landing").classList.toggle("hidden", name !== "landing");
   $("appNav").classList.toggle("hidden", name === "landing");
-  for (const s of ["processing", "results", "editor", "brand", "settings", "auto"]) $(s).classList.toggle("hidden", s !== name);
+  for (const s of ["processing", "results", "editor", "brand", "settings", "auto", "posts"]) $(s).classList.toggle("hidden", s !== name);
   $("navAuto").classList.toggle("on", name === "auto");
+  $("navPosts").classList.toggle("on", name === "posts");
   $("navSettings").classList.toggle("on", name === "settings");
   const el = $(name);
   if (el && screen.last !== name) { el.classList.remove("enter"); void el.offsetWidth; el.classList.add("enter"); }
   screen.last = name;
   const idx = { processing: 1, results: 2, editor: 3 }[name] || 0;
-  $("stepper").style.visibility = ["brand", "settings", "auto"].includes(name) ? "hidden" : "";
+  $("stepper").style.visibility = ["brand", "settings", "auto", "posts"].includes(name) ? "hidden" : "";
   $("stepper").innerHTML = ["Source", "Analyse", "Clips", "Edit"].map((l, i) =>
     `<span style="color:${i === idx ? "var(--color-accent)" : i < idx ? "var(--color-text)" : "var(--color-neutral-500)"};font-weight:${i === idx ? 800 : 500}">${String(i + 1).padStart(2, "0")} ${l}</span>`).join("");
   $("navBrand").classList.toggle("on", name === "brand");
@@ -822,6 +897,7 @@ async function route() {
   if (hpath === "#/brand") { screen("brand"); return openBrand(); }
   if (hpath === "#/settings") { screen("settings"); return openSettings(); }
   if (hpath === "#/auto") { screen("auto"); return openAuto(); }
+  if (hpath.startsWith("#/posts")) { screen("posts"); return openPosts(hpath.split("/")[2] || null); }
   const [, id, clip, action] = location.hash.match(/^#\/job\/([\w]+)(?:\/(clip_\d+))?(?:\/(publish))?/) || [];
   if (!id) { store.set("cf.lastJob", null); screen("landing"); loadProjects(); return; }
   if (S.jobId !== id) Object.assign(S, { jobId: id, M: null, sel: new Set(), edits: {}, words: null });
@@ -1351,7 +1427,7 @@ async function openPublish(ids) {
   if (single) loadSocial(ids[0], false);
 }
 function renderAccts(d) {
-  P.accts = d;
+  PO.accts = d;
   if (!d) return ($("pubAccts").innerHTML = `<div class="acct"><span></span><div><small>Loading your accounts…</small></div></div>`);
   if (d.error) return ($("pubAccts").innerHTML = `<div class="acct"><span></span><div><small class="bad">${esc(d.error)}</small></div></div>`);
   if (!d.accounts.length) return ($("pubAccts").innerHTML = `<div class="acct"><span></span><div><span class="nm">No accounts yet</span>
@@ -1422,7 +1498,7 @@ $("pubGo").onclick = async () => {
 function renderPubRows() {
   $("pubRows").innerHTML = P.ids.flatMap((id) => (P.sent || []).map((aid) => {
     const s = ((S.pub.status || {})[id] || {})[aid] || { state: "queued" };
-    const a = (P.accts?.accounts || []).find((x) => x.id === aid) || {};
+    const a = (PO.accts?.accounts || []).find((x) => x.id === aid) || {};
     const label = `${a.platform === "youtube" ? "YouTube" : "Instagram"} · ${esc(a.name || s.account || "")}`;
     let right;
     if (s.state === "done") right = `<a href="${esc(s.url)}" target="_blank" rel="noopener"><b>Open ↗</b></a>`;
@@ -1646,6 +1722,7 @@ function watchCard(w) {
       <div style="min-width:0"><b><a href="#/job/${j.id}" style="color:inherit">${esc(j.title || "Video")}</a></b><div class="meta">
         <span>${j.state === "done" ? `${j.clips} clips` : j.state === "failed" ? esc(j.error?.message?.slice(0, 120) || "failed") : "processing…"}</span>
         ${j.auto?.published ? `<span class="tag tag-accent">${j.auto.published} auto-published</span>` : ""}
+        ${j.auto?.post ? `<a href="#/posts/${j.auto.post}" class="tag tag-neutral">carousel</a>` : ""}
         ${j.auto?.skipped ? `<span>${esc(j.auto.skipped)}</span>` : ""}<span>${ago(j.created)}</span></div></div></div>`).join("")
     || `<small style="color:var(--color-neutral-700)">No new videos since you added it.</small>`;
   return `<div class="setcard wide" data-w="${w.id}">
@@ -1664,6 +1741,9 @@ function watchCard(w) {
       <div class="bf"><label>Minimum score</label>${num("min_score", w.min_score, 0, 100)}</div>
       <div class="bf"><label>Space posts</label>${sel("every_hours", [[0, "all at once"], [1, "every hour"], [3, "every 3 h"], [6, "every 6 h"], [12, "every 12 h"], [24, "one a day"]], w.every_hours)}</div>
       <div class="bf"><label>YouTube visibility</label>${sel("privacy", [["public", "Public"], ["unlisted", "Unlisted"], ["private", "Private"]], w.privacy)}</div>
+      <div class="bf"><label>Carousel post</label><label class="tgl">Also make a carousel<input type="checkbox" data-f="make_post" ${w.make_post ? "checked" : ""}><b></b></label></div>
+      <div class="bf"><label>Carousel look</label>${sel("post_theme", POST_THEMES, w.post_theme || "dark")}</div>
+      <div class="bf"><label>Carousel photos</label><label class="tgl">Photos from the web<input type="checkbox" data-f="post_images" ${w.post_images ? "checked" : ""}><b></b></label></div>
     </div></div>
     <div class="bf"><label>Publish to</label><div style="display:flex;gap:16px;flex-wrap:wrap">${accts}</div></div>
     <div><h6 style="margin:6px 0">Recent videos</h6>${recent}</div>
@@ -1706,6 +1786,218 @@ $("wList").addEventListener("click", async (e) => {
     }
   } catch (err) { toast(err.message); openAuto(); }
 });
+
+// ---------------------------------------------------------------- posts (carousels)
+const POST_THEMES = [["dark", "Dark"], ["light", "Light"], ["brand", "Brand color"]];
+let PO = { posts: [], jobs: [], accts: [], cur: null };
+$("pSlides").innerHTML = [3, 4, 5, 6, 7, 8, 9, 10].map((n) => `<option value="${n}" ${n === 7 ? "selected" : ""}>${n} slides</option>`).join("");
+$("pTheme").innerHTML = POST_THEMES.map(([v, l], i) => `<label class="seg-opt"><input type="radio" name="pTheme" value="${v}" ${i ? "" : "checked"}>${l}</label>`).join("");
+const postState = (p) => {
+  const st = Object.values(p.publish || {});
+  if (p.state === "writing") return `<span class="tag tag-neutral">writing…</span>`;
+  if (p.state === "failed") return `<span class="tag tag-neutral" style="color:var(--color-accent-700)">failed</span>`;
+  if (st.some((x) => x.state === "done")) return `<span class="tag tag-accent">posted</span>`;
+  if (st.some((x) => x.state === "waiting")) return `<span class="tag tag-neutral">scheduled</span>`;
+  if (st.some((x) => ["queued", "running"].includes(x.state))) return `<span class="tag tag-neutral">posting…</span>`;
+  return `<span class="tag tag-neutral">draft</span>`;
+};
+async function openPosts(id) {
+  clearTimeout(S.poll);
+  $("pHome").classList.toggle("hidden", !!id);
+  $("pEdit").classList.toggle("hidden", !id);
+  if (id) return openPost(id);
+  try {
+    const [posts, jobs, acc, img] = await Promise.all([api("/posts"), api("/jobs"), api("/accounts"), api("/images/status")]);
+    Object.assign(PO, { posts, jobs: jobs.filter((j) => j.state === "done"), accts: acc.accounts, photos: img.enabled });
+    $("pImages").disabled = !img.enabled;
+    if (!img.enabled) { $("pImages").checked = false; $("pImagesHint").textContent = "Off on this server — the owner adds a free PIXABAY_API_KEY to .env. You can still upload your own photos per slide."; }
+  } catch (e) { toast(e.message); }
+  const keep = $("pJob").value;
+  $("pJob").innerHTML = `<option value="">— use the prompt —</option>` +
+    PO.jobs.map((j) => `<option value="${j.id}">${esc((j.title || j.source || "Video").slice(0, 70))}</option>`).join("");
+  $("pJob").value = keep;
+  if (!$("pHandle").value) {
+    const ig = PO.accts.find((a) => a.platform === "instagram" && a.default);
+    if (ig?.name) $("pHandle").value = ig.name.startsWith("@") ? ig.name : "@" + ig.name;
+  }
+  $("pList").innerHTML = PO.posts.length ? PO.posts.map((p) => `<button class="po-card" data-post="${p.id}">
+      ${p.images[0] ? `<img class="po-thumb" src="${p.images[0]}" alt="" loading="lazy">` : `<div class="po-thumb">${p.state === "failed" ? esc(p.error || "Failed") : "Claude is writing the slides…"}</div>`}
+      <div class="po-body"><b>${esc(p.title || "Post")}</b><small>${postState(p)}<span>${p.files.length ? p.files.length + " slides · " : ""}${ago(p.created)}</span></small></div></button>`).join("")
+    : `<div class="setcard wide" style="grid-column:1/-1"><p style="margin:0">No posts yet. Describe one above, or open a finished video and press <b>Carousel</b>.</p></div>`;
+  if (PO.posts.some((p) => p.state === "writing")) S.poll = setTimeout(() => openPosts(null), 3000);
+}
+$("pList").addEventListener("click", (e) => { const c = e.target.closest("[data-post]"); if (c) go(`#/posts/${c.dataset.post}`); });
+$("pMake").onclick = async () => {
+  $("pErr").textContent = "";
+  const body = { prompt: $("pPrompt").value.trim() || null, job: $("pJob").value || null, slides: Number($("pSlides").value),
+                 theme: document.querySelector('input[name="pTheme"]:checked').value, handle: $("pHandle").value.trim(),
+                 images: $("pImages").checked };
+  if (!body.prompt && !body.job) { $("pErr").textContent = "Describe the post, or pick a video."; return; }
+  $("pMake").disabled = true;
+  try {
+    const p = await api("/posts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("pPrompt").value = ""; go(`#/posts/${p.id}`);
+  } catch (err) { $("pErr").textContent = err.message; }
+  $("pMake").disabled = false;
+};
+$("makePost").onclick = async () => {
+  try {
+    const p = await api("/posts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ job: S.jobId }) });
+    go(`#/posts/${p.id}`);
+  } catch (err) { toast(err.message); }
+};
+
+async function openPost(id, keepForm = false) {
+  let p;
+  try { [p] = await Promise.all([api(`/posts/${id}`), PO.accts.length ? null : api("/accounts").then((a) => { PO.accts = a.accounts; }),
+                                 PO.photos !== undefined ? null : api("/images/status").then((x) => { PO.photos = x.enabled; })]); }
+  catch (e) { toast(e.message); return go("#/posts"); }
+  PO.cur = p;
+  const back = `<button class="btn btn-ghost" onclick="go('#/posts')" style="padding-left:0;align-self:flex-start">← All posts</button>`;
+  if (p.state !== "ready") {
+    $("pEdit").innerHTML = back + `<div class="setcard wide">${p.state === "writing"
+      ? `<div class="po-writing"><i></i>Claude is writing your ${p.n_slides} slides${p.source?.job ? " from the video" : ""}${p.images ? " and finding photos" : ""}…</div>`
+      : `<h4>That didn't work</h4><p class="err" style="margin:0">${esc(p.error || "Unknown error")}</p>
+         <div><button class="btn btn-ghost" data-pdel>Delete</button></div>`}</div>`;
+    if (p.state === "writing") S.poll = setTimeout(() => openPost(id), 2500);
+    return;
+  }
+  const igs = PO.accts.filter((a) => a.platform === "instagram");
+  const status = Object.entries(p.publish || {}).map(([aid, st]) => `<div class="arow" style="grid-template-columns:auto 1fr"><i class="dot ${st.state === "failed" ? "bad" : ""}"></i>
+      <div style="min-width:0"><b>${esc(st.account || aid)}</b><div class="meta">
+        <span>${st.state === "done" ? `posted${st.url ? ` · <a href="${esc(st.url)}" target="_blank" rel="noopener">open on Instagram</a>` : ""}`
+          : st.state === "waiting" ? `scheduled for ${new Date(st.at * 1000).toLocaleString()}`
+          : st.state === "failed" ? `<span style="color:var(--color-accent-700)">${esc(st.error || "failed")}</span>`
+          : `${esc(st.step || st.state)}…`}</span></div></div></div>`).join("");
+  const slideBox = (s, i, n) => `<div class="po-slide" data-i="${i}">
+      <header><span>${String(i + 1).padStart(2, "0")} · ${i === 0 ? "Hook" : i === n - 1 && n > 2 ? "Call to action" : "Point"}</span>
+        ${n > 3 ? `<button class="btn btn-ghost" data-rm="${i}" style="padding:2px 6px" title="Remove slide">✕</button>` : ""}</header>
+      <input class="input" data-k="title" value="${esc(s.title)}" maxlength="160" placeholder="Title — wrap key words in *asterisks* to highlight them">
+      <textarea class="input" data-k="body" rows="2" maxlength="400" placeholder="Text">${esc(s.body)}</textarea>
+      <div class="po-photo">${s.image
+        ? `<img src="/posts/${p.id}/files/${esc(s.image.file)}" alt=""><small>${s.image.source === "upload" ? "Your photo"
+            : s.image.page ? `<a href="${esc(s.image.page)}" target="_blank" rel="noopener">${esc(s.image.credit || "Stock photo")}</a>` : esc(s.image.credit || "")}</small>
+           <button class="btn btn-ghost" data-find="${i}" style="padding:4px 8px">Change</button><button class="btn btn-ghost" data-noimg="${i}" style="padding:4px 8px">Remove</button>`
+        : `<small>No photo</small>${PO.photos ? `<button class="btn btn-ghost" data-find="${i}" style="padding:4px 8px">Find a photo</button>` : ""}`}
+        <label class="btn btn-ghost" style="padding:4px 8px">Upload<input type="file" accept="image/jpeg,image/png,image/webp" data-up="${i}" hidden></label></div>
+      <div class="po-find hidden" data-findbox="${i}"></div></div>`;
+  $("pEdit").innerHTML = back + `
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <h3 style="margin:0">${esc(p.title || "Post")}</h3><small style="color:var(--color-neutral-700)">${p.files.length} slides · 1080×1350 · swipe to see all</small></div>
+    ${p.note ? `<div class="err" style="font-weight:500">${esc(p.note)}</div>` : ""}
+    <div class="po-strip">${p.images.map((u, i) => `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="Slide ${i + 1}"></a>`).join("")}</div>
+    <div class="po-edit">
+      <div style="display:flex;flex-direction:column;gap:12px" id="pSlidesEd">
+        ${p.plan.slides.map((s, i, a) => slideBox(s, i, a.length)).join("")}
+        ${p.plan.slides.length < 10 ? `<button class="btn btn-secondary" data-add style="align-self:flex-start">+ Add slide</button>` : ""}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <div class="setcard">
+          <h4>Caption & look</h4>
+          <div class="bf"><label>Caption</label><textarea class="input" id="peCap" rows="6" maxlength="2000">${esc(p.plan.caption)}</textarea></div>
+          <div class="bf"><label>Hashtags</label><input class="input" id="peTags" value="${esc(p.plan.hashtags.map((t) => "#" + t).join(" "))}"></div>
+          <div class="bf"><label>Look</label><div class="seg">${POST_THEMES.map(([v, l]) => `<label class="seg-opt"><input type="radio" name="peTheme" value="${v}" ${p.theme === v ? "checked" : ""}>${l}</label>`).join("")}</div></div>
+          <div class="bf"><label>Handle on the slides</label><input class="input" id="peHandle" value="${esc(p.handle || "")}" maxlength="31"></div>
+          <button class="btn btn-primary" data-save>Save & redraw slides</button>
+        </div>
+        <div class="setcard">
+          <h4>Post to Instagram</h4>
+          ${igs.length ? `<div style="display:flex;flex-direction:column;gap:8px">${igs.map((a) => `<label class="check"><input type="checkbox" data-pacct="${a.id}" ${a.default ? "checked" : ""}>
+              ${ICONS.instagram.replace(/width="44" height="44"/, 'width="18" height="18"')} ${esc(a.label || a.name || "Instagram")}</label>`).join("")}</div>
+            <div class="seg"><label class="seg-opt"><input type="radio" name="peWhen" value="now" checked>Now</label><label class="seg-opt"><input type="radio" name="peWhen" value="later">Schedule</label></div>
+            <input class="input hidden" type="datetime-local" id="peAt" style="padding:7px 10px">
+            <button class="btn btn-primary" data-pub>Post carousel</button>`
+          : `<p style="margin:0">Add an Instagram account in <a href="#/settings">Settings</a> first.</p>`}
+          <small style="color:var(--color-neutral-700)">YouTube has no API for image posts, so carousels go to Instagram only.</small>
+          ${status ? `<div>${status}</div>` : ""}
+        </div>
+        <button class="btn btn-ghost" data-pdel style="align-self:flex-start">Delete post</button>
+      </div>
+    </div>`;
+  if (Object.values(p.publish || {}).some((x) => ["queued", "running"].includes(x.state))) S.poll = setTimeout(() => openPost(id), 2500);
+}
+const readSlides = () => $$("#pSlidesEd .po-slide").map((el) => {
+  const was = PO.cur.plan.slides[Number(el.dataset.i)] || {};
+  return { title: el.querySelector('[data-k="title"]').value, body: el.querySelector('[data-k="body"]').value,
+           image: was.image, image_query: was.image_query };
+});
+async function findPhotos(i, q) {
+  const box = document.querySelector(`[data-findbox="${i}"]`);
+  box.classList.remove("hidden");
+  if (!box.firstChild) box.innerHTML = `<div class="row"><input class="input" data-q="${i}" style="padding:7px 10px" placeholder="Search free photos">
+      <button class="btn btn-secondary" data-search="${i}" style="padding:4px 12px">Search</button></div><div class="po-results" data-res="${i}"></div>`;
+  const input = box.querySelector("[data-q]"), res = box.querySelector("[data-res]");
+  if (q != null) input.value = q;
+  if (!input.value.trim()) return input.focus();
+  res.innerHTML = `<small>Searching…</small>`;
+  try {
+    const { photos } = await api(`/images/search?q=${encodeURIComponent(input.value.trim())}`);
+    res.innerHTML = photos.length ? photos.map((ph) => `<button type="button" data-pick="${ph.id}" data-slide="${i}" title="${esc(ph.alt)} — ${esc(ph.credit)}"><img src="${esc(ph.thumb)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"></button>`).join("")
+      : `<small>No photos for that — try simpler words.</small>`;
+  } catch (err) { res.innerHTML = `<small class="err">${esc(err.message)}</small>`; }
+}
+$("pEdit").addEventListener("change", async (e) => {
+  if (e.target.name === "peWhen") $("peAt").classList.toggle("hidden", e.target.value !== "later");
+  if (e.target.dataset.up != null && e.target.files[0]) {
+    const fd = new FormData(); fd.append("file", e.target.files[0]);
+    toast("Uploading photo…");
+    try { await api(`/posts/${PO.cur.id}/slides/${e.target.dataset.up}/image/upload`, { method: "POST", body: fd }); toast("Photo added"); }
+    catch (err) { toast(err.message); }
+    openPost(PO.cur.id);
+  }
+});
+$("pEdit").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.dataset.q != null) { e.preventDefault(); findPhotos(Number(e.target.dataset.q)); } });
+$("pEdit").addEventListener("click", async (e) => {
+  const p = PO.cur; if (!p) return;
+  const t = e.target.closest("button"); if (!t) return;
+  try {
+    if (t.matches("[data-find]")) {
+      const i = Number(t.dataset.find), sl = p.plan.slides[i];
+      return findPhotos(i, sl.image_query || sl.title.replace(/\*/g, "").split(/\s+/).slice(0, 5).join(" "));
+    }
+    if (t.matches("[data-search]")) return findPhotos(Number(t.dataset.search));
+    if (t.matches("[data-pick]")) {
+      $$("[data-pick]").forEach((b) => { b.disabled = true; });
+      t.style.borderColor = "var(--color-accent)";
+      await api(`/posts/${p.id}/slides/${t.dataset.slide}/image`, { method: "PUT", headers: { "Content-Type": "application/json" },
+                                                                    body: JSON.stringify({ photo_id: t.dataset.pick }) });
+      toast("Photo added"); return openPost(p.id);
+    }
+    if (t.matches("[data-noimg]")) {
+      t.disabled = true;
+      await api(`/posts/${p.id}/slides/${t.dataset.noimg}/image`, { method: "DELETE" }); return openPost(p.id);
+    }
+    if (t.matches("[data-rm]") || t.matches("[data-add]")) {
+      const slides = readSlides();
+      if (t.matches("[data-rm]")) slides.splice(Number(t.dataset.rm), 1);
+      else slides.splice(slides.length - 1, 0, { title: "New point", body: "" });
+      PO.cur.plan.slides = slides;
+      t.disabled = true;
+      await saveCur({ slides });
+    } else if (t.matches("[data-save]")) {
+      t.disabled = true; t.textContent = "Drawing…";
+      await saveCur({ slides: readSlides(), caption: $("peCap").value,
+                      hashtags: $("peTags").value.split(/[\s,]+/).map((x) => x.replace(/^#/, "")).filter(Boolean),
+                      theme: document.querySelector('input[name="peTheme"]:checked').value, handle: $("peHandle").value.trim() });
+      toast("Slides redrawn");
+    } else if (t.matches("[data-pub]")) {
+      const accounts = $$("[data-pacct]:checked").map((x) => x.dataset.pacct);
+      const later = document.querySelector('input[name="peWhen"]:checked').value === "later";
+      const at = later && $("peAt").value ? new Date($("peAt").value).getTime() / 1000 : null;
+      if (later && !at) return toast("Pick a date and time.");
+      t.disabled = true;
+      await api(`/posts/${p.id}/publish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accounts, start_at: at }) });
+      toast(at ? "Scheduled" : "Posting to Instagram…"); openPost(p.id);
+    } else if (t.matches("[data-pdel]")) {
+      if (!confirm("Delete this post? Scheduled posting is cancelled too.")) return;
+      await api(`/posts/${p.id}`, { method: "DELETE" }); toast("Deleted"); go("#/posts");
+    }
+  } catch (err) { toast(err.message); t.disabled = false; }
+});
+async function saveCur(body) {
+  await api(`/posts/${PO.cur.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return openPost(PO.cur.id);
+}
 
 // ---------------------------------------------------------------- settings
 const ICONS = {
@@ -1931,7 +2223,7 @@ let AUTH = { mode: "login", config: {} };
 
 function showAuth() {
   S.user = null;
-  for (const id of ["landing", "appNav", "processing", "results", "editor", "brand", "settings", "auto"]) $(id).classList.add("hidden");
+  for (const id of ["landing", "appNav", "processing", "results", "editor", "brand", "settings", "auto", "posts"]) $(id).classList.add("hidden");
   $("umenu").classList.add("hidden");
   $("authView").classList.remove("hidden");
   setAuthMode(AUTH.config.first_user ? "signup" : AUTH.mode === "signup" ? "signup" : "login");

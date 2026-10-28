@@ -34,6 +34,8 @@ def db():
         d.oauth_states.create_index("expires", expireAfterSeconds=0)  # unfinished Connect clicks vanish
         d.watches.create_index([("user_id", ASCENDING), ("channel_id", ASCENDING)], unique=True)
         d.jobs.create_index("auto.watch")
+        d.posts.create_index([("user_id", ASCENDING), ("created", DESCENDING)])
+        d.schedule.create_index("post", sparse=True)
         d.sessions.create_index([("user_id", ASCENDING), ("sid", ASCENDING)])
         d.login_attempts.create_index("at", expireAfterSeconds=3600)   # throttle window data cleans itself
         d.login_attempts.create_index("key")

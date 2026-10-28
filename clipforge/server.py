@@ -16,6 +16,7 @@ GET  /jobs/{id}/zip?ids=a,b      several clips as one .zip
 POST /jobs/{id}/clips/{clip_id}  JSON {hook?, trim?, lines?, template?} → re-render
 GET/PUT /brand, POST /brand/preview, POST /brand/asset   your brand style
 /publish/…, /jobs/{id}/publish   YouTube / Instagram (owner account only)
+/posts, /posts/{id}[/publish]    carousels written by Claude from a prompt or a video → Instagram
 
 Jobs interrupted by a restart are resumed on startup; finished steps are cached on disk.
 """
@@ -57,7 +58,7 @@ MAX_UPLOAD_MB = int(os.environ.get("CLIPFORGE_MAX_UPLOAD_MB", "4096"))
 app = FastAPI(title="clipforge", docs_url=None, redoc_url=None, openapi_url=None)   # no public API explorer
 
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-       "font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com; "
+       "font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https://res.cloudinary.com https://images.pexels.com https://pixabay.com https://cdn.pixabay.com; "
        "media-src 'self' blob: https://res.cloudinary.com; connect-src 'self'; frame-ancestors 'none'; "
        "base-uri 'self'; object-src 'none'; form-action 'self'")
 
@@ -461,6 +462,12 @@ def _startup() -> None:
                 if st.get("state") in ("queued", "running"):
                     _set(j["_id"], **{f"publish.{clip}.{platform}.state": "failed",
                                       f"publish.{clip}.{platform}.error": "Interrupted by a server restart — publish again."})
+    for p in db().posts.find({"state": "writing"}, {"_id": 1}):           # posts cut off by a restart
+        _start_post(p["_id"])
+    for p in db().posts.find({"publish": {"$exists": True}}, {"publish": 1}):
+        for acct, st in (p.get("publish") or {}).items():
+            if st.get("state") in ("queued", "running"):
+                _post_status(p["_id"], acct, state="failed", error="Interrupted by a server restart — post again.")
     threading.Thread(target=_scheduler, daemon=True).start()
     threading.Thread(target=_watcher, daemon=True).start()          # automations: new uploads → clips
 
@@ -850,6 +857,9 @@ def _scheduler() -> None:
     while True:
         try:
             while x := db().schedule.find_one_and_delete({"at": {"$lte": time.time()}}, sort=[("at", ASCENDING)]):
+                if x.get("post"):                     # a carousel
+                    threading.Thread(target=_publish_post, args=(x["post"], x["account"]), daemon=True).start()
+                    continue
                 threading.Thread(target=_publish_one, args=(x["job"], x["clip"], x.get("account") or x["platform"],
                                                             x["opts"]), daemon=True).start()
         except Exception:  # noqa: BLE001 - database hiccup: try again next round
@@ -1125,19 +1135,31 @@ def _watcher() -> None:
 
 
 def _after_job(job_id: str) -> None:
-    """Automation projects from the user's own channel: publish the best clips right away, spaced out."""
+    """Automation projects: make the carousel (if switched on); from the user's own channel also publish
+    the best clips right away, spaced out."""
     job = db().jobs.find_one({"_id": job_id}, {"auto": 1, "user_id": 1, "manifest": 1})
     auto = (job or {}).get("auto") or {}
-    if not auto.get("publish"):
+    if not auto.get("watch"):
         return
     w = db().watches.find_one({"_id": auto.get("watch")})
     user = db().users.find_one({"_id": job["user_id"]})
-    if not w or not user or not w.get("enabled") or not w.get("auto_publish"):
+    if not w or not user or not w.get("enabled"):
         return
-    if w["channel_id"] not in _owned_channels(user):   # re-checked at publish time
+    owned = w["channel_id"] in _owned_channels(user)   # re-checked at publish time
+    publish = bool(auto.get("publish")) and bool(w.get("auto_publish")) and owned
+    accts = [a for a in _user_accounts(user) if a["id"] in set(w.get("accounts") or []) and a.get("status") != "error"]
+    if w.get("make_post"):                             # carousel: halfway between the first two clips
+        ig = [a["id"] for a in accts if a["platform"] == "instagram"]
+        post = _new_post(user, job=job_id, slides=w.get("post_slides", 7), theme=w.get("post_theme", "dark"),
+                         images=bool(w.get("post_images")),
+                         auto={"watch": w["_id"], "publish": publish and bool(ig), "accounts": ig,
+                               "at": time.time() + w.get("every_hours", 6) * 1800})
+        _set(job_id, **{"auto.post": post["_id"]})
+    if not auto.get("publish") or not w.get("auto_publish"):
+        return
+    if not owned:
         _set(job_id, **{"auto.skipped": "Channel is no longer one of your connected YouTube accounts."})
         return
-    accts = [a for a in _user_accounts(user) if a["id"] in set(w.get("accounts") or []) and a.get("status") != "error"]
     clips = sorted(job["manifest"]["clips"], key=lambda c: -c.get("score", 0))
     picks = [c["id"] for c in clips if c.get("score", 0) >= w.get("min_score", 60)][: w.get("post_count", 3)]
     if not accts or not picks:
@@ -1159,6 +1181,9 @@ class WatchReq(BaseModel):
     min_score: Optional[int] = None
     every_hours: Optional[float] = None
     privacy: Optional[str] = None
+    make_post: Optional[bool] = None
+    post_images: Optional[bool] = None
+    post_theme: Optional[str] = None
 
 
 def _watch_updates(req: WatchReq, user: dict, owned: bool) -> dict:
@@ -1189,6 +1214,13 @@ def _watch_updates(req: WatchReq, user: dict, owned: bool) -> dict:
         if req.privacy not in ("public", "unlisted", "private"):
             raise HTTPException(400, "privacy must be public, unlisted or private")
         upd["privacy"] = req.privacy
+    if req.make_post is not None:
+        upd["make_post"] = req.make_post
+    if req.post_images is not None:
+        upd["post_images"] = req.post_images
+    if req.post_theme is not None:
+        _check_post_style(req.post_theme, None)
+        upd["post_theme"] = req.post_theme
     return upd
 
 
@@ -1220,6 +1252,7 @@ def add_watch(req: WatchReq, user: User):
          "url": f"https://www.youtube.com/channel/{ch['id']}", "added": time.time(), "enabled": True,
          "auto_publish": owned, "accounts": defaults, "length": "auto", "max_clips": 6, "post_count": 3,
          "min_score": 60, "every_hours": 6, "privacy": "public", "permission": bool(req.permission) or owned,
+         "make_post": False, "post_theme": "dark",
          "seen": [v["id"] for v in feed["videos"]],           # only videos from now on — no backlog
          "last_check": time.time(), "last_error": None}
     w.update(_watch_updates(req.model_copy(update={"url": None}), user, owned))
@@ -1259,6 +1292,401 @@ def check_watch_now(watch_id: str, user: User):
 def remove_watch(watch_id: str, user: User):
     _my_watch(watch_id, user)
     db().watches.delete_one({"_id": watch_id})
+    return {"ok": True}
+
+
+# =========================================================================== posts: carousels from a prompt or a video
+POST_FILE = re.compile(r"slide_\d{2}\.jpg")
+POSTS_PER_DAY = int(os.environ.get("CLIPFORGE_POSTS_PER_DAY", "40"))     # each one is a Claude call
+
+
+def _post_dir(post_id: str) -> Path:
+    return ROOT / "posts" / post_id
+
+
+def _post(post_id: str, user: dict) -> dict:
+    p = db().posts.find_one({"_id": post_id, "user_id": user["_id"]})
+    if not p:
+        raise HTTPException(404, "Post not found.")
+    return p
+
+
+def _post_view(p: dict) -> dict:
+    out = public(p, ("user_id", "cloud"))
+    out["images"] = [f"/posts/{p['_id']}/files/{n}?v={p.get('version', 0)}" for n in p.get("files", [])]
+    return out
+
+
+def _default_handle(user: dict) -> str:
+    ig = next((a for a in _user_accounts(user) if a["platform"] == "instagram" and a.get("default")), None)
+    name = (ig or {}).get("name") or ""
+    return name if name.startswith("@") or not name else "@" + name
+
+
+def _job_text(job_id: str) -> tuple[str, str, str]:
+    """(transcript, title, language) of a finished project; falls back to the clips' words."""
+    job = db().jobs.find_one({"_id": job_id}, {"title": 1, "manifest": 1}) or {}
+    m = job.get("manifest") or {}
+    tr = ROOT / job_id / "transcript.json"
+    text = ""
+    if tr.exists():
+        try:
+            text = " ".join(w["text"].strip() for w in json.loads(tr.read_text(encoding="utf-8"))["words"])
+        except (ValueError, KeyError):
+            text = ""
+    if not text:
+        from .social import clip_text
+        text = "\n\n".join(f"[{c.get('hook', '')}] {clip_text(c)}" for c in m.get("clips", []))
+    return text, job.get("title") or "", m.get("language") or ""
+
+
+def _render_post(p: dict, user: dict) -> list[str]:
+    from . import carousel
+    look = carousel.look_for(p.get("theme", "dark"), _brand(user), p.get("handle") or "")
+    return [f.name for f in carousel.render(p["plan"], _post_dir(p["_id"]), look)]
+
+
+def _start_post(post_id: str) -> None:
+    threading.Thread(target=_make_post, args=(post_id,), daemon=True).start()
+
+
+def _make_post(post_id: str) -> None:
+    """Claude writes the slides, Pillow draws them; automation posts are then queued for Instagram."""
+    from . import carousel
+    p = db().posts.find_one({"_id": post_id})
+    user = db().users.find_one({"_id": p["user_id"]}) if p else None
+    if not user:
+        return
+    try:
+        transcript = title = language = ""
+        if p["source"].get("job"):
+            transcript, title, language = _job_text(p["source"]["job"])
+        plan = carousel.write(p["source"].get("prompt") or "", transcript, title, p.get("n_slides", 7), language,
+                              p.get("handle") or "", images=bool(p.get("images")))
+        note = _auto_photos(post_id, plan) if p.get("images") else None
+        p["plan"] = plan
+        files = _render_post(p, user)
+        db().posts.update_one({"_id": post_id}, {"$set": {"plan": plan, "files": files, "state": "ready",
+                                                          "version": 1, "error": None, "note": note}})
+    except Exception as e:  # noqa: BLE001
+        db().posts.update_one({"_id": post_id}, {"$set": {"state": "failed", "error": str(e)[:300]}})
+        return
+    auto = p.get("auto") or {}
+    if auto.get("publish") and auto.get("accounts"):
+        accts = [a for a in _user_accounts(user) if a["id"] in set(auto["accounts"]) and a["platform"] == "instagram"]
+        _queue_post(post_id, user["_id"], accts, auto.get("at"))
+
+
+def _set_photo(post_id: str, slide: dict, photo: dict) -> None:
+    """Download a stock photo next to the slides and attach it to the slide."""
+    from . import images
+    name = images.file_name(photo["id"])
+    if not (_post_dir(post_id) / name).exists():
+        images.download(photo, _post_dir(post_id) / name)
+    slide["image"] = {"file": name, "source": photo["source"], "credit": photo["credit"], "page": photo["page"]}
+
+
+def _auto_photos(post_id: str, plan: dict) -> Optional[str]:
+    """Claude's search phrase per slide → the first fitting stock photo not already used. Returns a note on failure."""
+    from . import images
+    if not images.enabled():
+        return "Web photos are off on this server (PIXABAY_API_KEY isn't set) — the slides use plain backgrounds."
+    used, missed = set(), 0
+    for s in plan["slides"]:
+        q = s.get("image_query") or ""
+        if s["kind"] == "cta" or not q:
+            continue
+        try:
+            pick = next((ph for ph in images.search(q, 6) if ph["id"] not in used), None)
+            if pick:
+                _set_photo(post_id, s, pick)
+                used.add(pick["id"])
+            else:
+                missed += 1
+        except images.ImageError as e:
+            return f"Some photos couldn't be added: {e}"
+    return f"No photo found for {missed} slide{'s' if missed > 1 else ''}." if missed else None
+
+
+def _new_post(user: dict, prompt: str = "", job: Optional[str] = None, slides: int = 7, theme: str = "dark",
+              handle: Optional[str] = None, auto: Optional[dict] = None, images: bool = False) -> dict:
+    post_id = uuid.uuid4().hex[:12]
+    title = (prompt.strip().splitlines() or [""])[0][:90] if prompt else \
+        (db().jobs.find_one({"_id": job}, {"title": 1}) or {}).get("title") or "Video"
+    p = {"_id": post_id, "user_id": user["_id"], "created": time.time(), "state": "writing", "title": title,
+         "source": {"prompt": prompt.strip()[:2000], "job": job}, "n_slides": slides, "theme": theme,
+         "handle": _default_handle(user) if handle is None else handle, "files": [], "version": 0, "auto": auto,
+         "images": images}
+    db().posts.insert_one(p)
+    _start_post(post_id)
+    return p
+
+
+def _post_status(post_id: str, account_id: str, **kw) -> None:
+    kw["updated"] = time.time()
+    db().posts.update_one({"_id": post_id}, {"$set": {f"publish.{account_id}.{k}": v for k, v in kw.items()}})
+
+
+def _post_cloud(p: dict, user_id: str, prog) -> list[str]:
+    """Signed Cloudinary links to the current slides (Instagram downloads each one)."""
+    if not storage.enabled():
+        raise RuntimeError("Instagram downloads each slide from a link — add CLOUDINARY_URL to the server's .env.")
+    cloud = p.get("cloud") or {}
+    if cloud.get("version") == p.get("version") and len(cloud.get("urls", [])) == len(p["files"]):
+        return cloud["urls"]
+    d = _post_dir(p["_id"])
+    if not all((d / f).exists() for f in p["files"]):            # work dir cleaned up: draw them again
+        _render_post(p, db().users.find_one({"_id": user_id}))
+    urls = []
+    for k, name in enumerate(p["files"]):
+        prog(f"saving slide {k + 1} of {len(p['files'])}", 0.02)
+        urls.append(storage.upload(d / name, f"clipforge/{user_id}/posts/{p['_id']}", "image")["url"])
+    db().posts.update_one({"_id": p["_id"]}, {"$set": {"cloud": {"version": p.get("version"), "urls": urls}}})
+    return urls
+
+
+def _publish_post(post_id: str, account_id: str) -> None:
+    from . import accounts, carousel, publish
+    try:
+        p = db().posts.find_one({"_id": post_id})
+        if not p or p.get("state") != "ready":
+            raise RuntimeError("This post isn't ready (or was deleted).")
+        acct = _account(p["user_id"], account_id)
+        if acct["platform"] != "instagram":
+            raise RuntimeError("Carousels can only be posted to Instagram.")
+        _post_status(post_id, account_id, platform="instagram", account=acct.get("label") or acct.get("name"),
+                     state="running", step="starting", pct=0, error=None)
+        prog = lambda st, pct: _post_status(post_id, account_id, state="running", step=st, pct=round(pct, 3))  # noqa: E731
+        urls = _post_cloud(p, p["user_id"], prog)
+        token = accounts.instagram_token(acct, lambda upd: _save_account(p["user_id"], acct["id"], upd))
+        r = publish.instagram_carousel(token, acct["ext_id"], urls, carousel.full_caption(p["plan"]), prog)
+        _post_status(post_id, account_id, state="done", pct=1, step="done", at=None, **r)
+    except Exception as e:  # noqa: BLE001
+        _post_status(post_id, account_id, state="failed", error=str(e)[:500])
+
+
+def _queue_post(post_id: str, user_id: str, accts: list[dict], at: Optional[float]) -> list[dict]:
+    now, queued = time.time(), []
+    for a in accts:
+        meta = {"platform": a["platform"], "account": a.get("label") or a.get("name")}
+        if not at or at <= now + 60:
+            _post_status(post_id, a["id"], state="queued", pct=0, error=None, at=None, **meta)
+            threading.Thread(target=_publish_post, args=(post_id, a["id"]), daemon=True).start()
+        else:
+            db().schedule.insert_one({"post": post_id, "user_id": user_id, "account": a["id"],
+                                      "platform": a["platform"], "at": at, "opts": {}})
+            _post_status(post_id, a["id"], state="waiting", pct=0, error=None, at=at, **meta)
+        queued.append({"account": a["id"], "at": at})
+    return queued
+
+
+class PostReq(BaseModel):
+    prompt: Optional[str] = None
+    job: Optional[str] = None
+    slides: int = 7
+    theme: str = "dark"
+    handle: Optional[str] = None
+    images: bool = False
+
+
+def _check_post_style(theme: Optional[str], handle: Optional[str]) -> None:
+    from . import carousel
+    if theme is not None and theme not in carousel.THEMES:
+        raise HTTPException(400, f"theme must be one of {', '.join(carousel.THEMES)}")
+    if handle and not re.fullmatch(r"@?[\w.]{1,30}", handle.strip()):
+        raise HTTPException(400, "The handle can only use letters, numbers, dots and underscores.")
+
+
+@app.post("/posts")
+def create_post(req: PostReq, user: User):
+    from . import carousel
+    prompt = (req.prompt or "").strip()
+    if not prompt and not req.job:
+        raise HTTPException(400, "Describe the post, or pick one of your videos.")
+    if req.job and _job(req.job, user, {"state": 1})["state"] != "done":
+        raise HTTPException(400, "That video is still processing.")
+    if not carousel.MIN_SLIDES <= req.slides <= carousel.MAX_SLIDES:
+        raise HTTPException(400, f"slides must be between {carousel.MIN_SLIDES} and {carousel.MAX_SLIDES}")
+    _check_post_style(req.theme, req.handle)
+    if db().posts.count_documents({"user_id": user["_id"], "created": {"$gt": time.time() - 86400}}) >= POSTS_PER_DAY:
+        raise HTTPException(429, f"You can create up to {POSTS_PER_DAY} posts a day.")
+    return _post_view(_new_post(user, prompt, req.job, req.slides, req.theme,
+                                None if req.handle is None else req.handle.strip(), images=req.images))
+
+
+@app.get("/posts")
+def list_posts(user: User):
+    return [_post_view(p) for p in db().posts.find({"user_id": user["_id"]}).sort("created", -1).limit(100)]
+
+
+@app.get("/posts/{post_id}")
+def get_post(post_id: str, user: User):
+    return _post_view(_post(post_id, user))
+
+
+class PostEditReq(BaseModel):
+    slides: Optional[list[dict]] = None
+    caption: Optional[str] = None
+    hashtags: Optional[list[str]] = None
+    theme: Optional[str] = None
+    handle: Optional[str] = None
+
+
+@app.patch("/posts/{post_id}")
+def edit_post(post_id: str, req: PostEditReq, user: User):
+    """Edit slide text / caption / look → the slides are drawn again."""
+    from . import carousel
+    p = _post(post_id, user)
+    if p.get("state") != "ready":
+        raise HTTPException(409, "This post isn't ready yet.")
+    _check_post_style(req.theme, req.handle)
+    plan = dict(p["plan"])
+    for k in ("slides", "caption", "hashtags"):
+        if getattr(req, k) is not None:
+            plan[k] = getattr(req, k)
+    try:
+        plan = carousel.clean(plan)
+    except carousel.CarouselError as e:
+        raise HTTPException(400, str(e))
+    for s in plan["slides"]:                     # only photos that really belong to this post
+        if s.get("image") and not (_post_dir(post_id) / s["image"]["file"]).exists():
+            s.pop("image")
+    upd = {"plan": plan, "version": p.get("version", 0) + 1}
+    if req.theme is not None:
+        upd["theme"] = req.theme
+    if req.handle is not None:
+        upd["handle"] = req.handle.strip()
+    p.update(upd)
+    upd["files"] = _render_post(p, user)
+    db().posts.update_one({"_id": post_id}, {"$set": upd})
+    return _post_view({**p, **upd})
+
+
+@app.get("/posts/{post_id}/files/{name}")
+def post_file(post_id: str, name: str, user: User):
+    from .carousel import IMAGE_FILE
+    p = _post(post_id, user)
+    photos = {(s.get("image") or {}).get("file") for s in (p.get("plan") or {}).get("slides", [])}
+    if POST_FILE.fullmatch(name) and name in p.get("files", []):
+        path = _post_dir(post_id) / name
+        if not path.exists():
+            _render_post(p, user)
+    elif IMAGE_FILE.fullmatch(name) and name in photos and (_post_dir(post_id) / name).exists():
+        path = _post_dir(post_id) / name
+    else:
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+# --------------------------------------------------------------------------- photos for slides
+SEARCHES_PER_HOUR = 60
+_searches: dict[str, list[float]] = {}
+
+
+@app.get("/images/status")
+def images_status(user: User):
+    from . import images
+    return {"enabled": images.enabled()}
+
+
+@app.get("/images/search")
+def image_search(q: str, user: User, page: int = 1):
+    from . import images
+    now = time.time()
+    recent = [t for t in _searches.get(user["_id"], []) if now - t < 3600]
+    if len(recent) >= SEARCHES_PER_HOUR:
+        raise HTTPException(429, "Too many photo searches — try again in a while.")
+    _searches[user["_id"]] = recent + [now]
+    try:
+        return {"photos": images.search(q[:100], 15, page)}
+    except images.ImageError as e:
+        raise HTTPException(400, str(e))
+
+
+def _slide_of(p: dict, index: int) -> dict:
+    if p.get("state") != "ready":
+        raise HTTPException(409, "This post isn't ready yet.")
+    slides = p["plan"]["slides"]
+    if not 0 <= index < len(slides):
+        raise HTTPException(404, "Slide not found.")
+    return slides[index]
+
+
+def _redraw(p: dict, user: dict) -> dict:
+    p["version"] = p.get("version", 0) + 1
+    p["files"] = _render_post(p, user)
+    db().posts.update_one({"_id": p["_id"]}, {"$set": {"plan": p["plan"], "version": p["version"], "files": p["files"]}})
+    return _post_view(p)
+
+
+class SlidePhotoReq(BaseModel):
+    photo_id: str                                # "pixabay:123" / "pexels:456" from /images/search
+
+
+@app.put("/posts/{post_id}/slides/{index}/image")
+def set_slide_photo(post_id: str, index: int, req: SlidePhotoReq, user: User):
+    """Use a stock photo (by id — the server looks up its address itself) on one slide."""
+    from . import images
+    p = _post(post_id, user)
+    slide = _slide_of(p, index)
+    try:
+        _set_photo(post_id, slide, images.photo(req.photo_id[:40]))
+    except images.ImageError as e:
+        raise HTTPException(400, str(e))
+    return _redraw(p, user)
+
+
+@app.post("/posts/{post_id}/slides/{index}/image/upload")
+async def upload_slide_photo(post_id: str, index: int, user: User, file: UploadFile = File(...)):
+    from . import images
+    p = _post(post_id, user)
+    slide = _slide_of(p, index)
+    data = await file.read(images.MAX_BYTES + 1)
+    if len(data) > images.MAX_BYTES:
+        raise HTTPException(400, "That image is too large (max 25 MB).")
+    name = f"img_up_{uuid.uuid4().hex[:10]}.jpg"
+    try:
+        images.save_jpeg(data, _post_dir(post_id) / name)
+    except images.ImageError as e:
+        raise HTTPException(400, str(e))
+    slide["image"] = {"file": name, "source": "upload"}
+    return _redraw(p, user)
+
+
+@app.delete("/posts/{post_id}/slides/{index}/image")
+def remove_slide_photo(post_id: str, index: int, user: User):
+    p = _post(post_id, user)
+    _slide_of(p, index).pop("image", None)
+    return _redraw(p, user)
+
+
+class PostPublishReq(BaseModel):
+    accounts: list[str]
+    start_at: Optional[float] = None
+
+
+@app.post("/posts/{post_id}/publish")
+def publish_post(post_id: str, req: PostPublishReq, user: User):
+    p = _post(post_id, user)
+    if p.get("state") != "ready":
+        raise HTTPException(409, "This post isn't ready yet.")
+    mine = {a["id"]: a for a in _user_accounts(user) if a["platform"] == "instagram"}
+    if not req.accounts:
+        raise HTTPException(400, "Pick at least one Instagram account.")
+    if any(a not in mine for a in req.accounts):
+        raise HTTPException(400, "Carousels go to Instagram — add an Instagram account in Settings first.")
+    db().schedule.delete_many({"post": post_id, "account": {"$in": req.accounts}})    # rescheduling replaces
+    return {"queued": _queue_post(post_id, user["_id"], [mine[a] for a in req.accounts], req.start_at)}
+
+
+@app.delete("/posts/{post_id}")
+def delete_post(post_id: str, user: User):
+    _post(post_id, user)
+    if storage.enabled():
+        storage.delete_folder(f"clipforge/{user['_id']}/posts/{post_id}")
+    db().schedule.delete_many({"post": post_id})
+    db().posts.delete_one({"_id": post_id})
+    shutil.rmtree(_post_dir(post_id), ignore_errors=True)
     return {"ok": True}
 
 
@@ -1487,7 +1915,9 @@ def delete_account(req: DeleteReq, response: Response, user: User):
     if storage.enabled():
         storage.delete_folder(f"clipforge/{user['_id']}")
     shutil.rmtree(BRAND_ASSETS / user["_id"], ignore_errors=True)
-    for coll in ("jobs", "schedule", "sessions", "oauth_states", "watches"):
+    for p in db().posts.find({"user_id": user["_id"]}, {"_id": 1}):
+        shutil.rmtree(_post_dir(p["_id"]), ignore_errors=True)
+    for coll in ("jobs", "schedule", "sessions", "oauth_states", "watches", "posts"):
         db()[coll].delete_many({"user_id": user["_id"]})
     db().users.delete_one({"_id": user["_id"]})
     response.delete_cookie(auth.COOKIE, path="/")
